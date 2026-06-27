@@ -1,0 +1,9 @@
+{
+  "name": "Festival POS",
+  "short_name": "POS",
+  "start_url": "app.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1e293b",
+  "icons": []
+}

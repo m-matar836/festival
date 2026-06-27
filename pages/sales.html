@@ -1,0 +1,104 @@
+<div class="sales-layout">
+
+    <div class="products-panel">
+
+        <input
+            id="searchProduct"
+            placeholder="بحث عن منتج..."
+            oninput="searchProducts()">
+
+        <div id="productsGrid"></div>
+
+    </div>
+
+    <div class="cart-panel">
+
+        <h2>السلة</h2>
+
+        <table>
+
+            <thead>
+                <tr>
+                    <th>المنتج</th>
+                    <th>الكمية</th>
+                    <th>السعر</th>
+                    <th></th>
+                </tr>
+            </thead>
+
+            <tbody id="cartTable"></tbody>
+
+        </table>
+
+        <div class="cart-total">
+
+            الإجمالي:
+            <span id="grandTotal">0</span>
+
+        </div>
+
+        <div class="totals-box">
+
+    <div>
+        Sub Total:
+        <span id="subTotal">0</span>
+    </div>
+
+    <div>
+
+        Discount %
+
+        <input
+        id="discount"
+        type="number"
+        value="0"
+        min="0"
+        max="100"
+        onchange="renderCart()">
+
+    </div>
+
+    <div>
+
+        Total:
+
+        <span id="grandTotal">
+            0
+        </span>
+
+    </div>
+
+</div>
+
+        <button
+            class="checkout-btn"
+            onclick="checkout()">
+
+            إتمام البيع
+
+        </button>
+        
+<button id="qrBtn" class="fab-scan" onclick="scanBarcode()">📷</button>
+    </div>
+
+</div>
+
+<div id="scannerModal" class="scanner-modal">
+
+    <div class="scanner-box">
+
+        <div class="scanner-header">
+
+            <h3>Barcode Scanner</h3>
+
+            <button onclick="closeScanner()">
+                ✖
+            </button>
+
+        </div>
+
+        <div id="reader"></div>
+
+    </div>
+
+</div>
