@@ -1,0 +1,55 @@
+<div class="inventory-page">
+
+    <div class="inventory-actions">
+
+        <input
+        id="barcode"
+        placeholder="Barcode">
+
+        <input
+        id="qty"
+        type="number"
+        placeholder="Qty">
+
+        <button
+        onclick="addStock()">
+
+        إضافة مخزون
+
+        </button>
+
+        <button
+        onclick="removeStock()">
+
+        سحب مخزون
+
+        </button>
+
+    </div>
+
+    <input
+    id="searchInventory"
+    placeholder="بحث..."
+
+    oninput="filterInventory()">
+
+    <table>
+
+        <thead>
+
+        <tr>
+
+            <th>Barcode</th>
+            <th>Name</th>
+            <th>Price</th>
+            <th>Qty</th>
+
+        </tr>
+
+        </thead>
+
+        <tbody id="inventoryTable"></tbody>
+
+    </table>
+
+</div>

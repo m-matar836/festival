@@ -1,0 +1,121 @@
+<div class="page-header">
+
+    <div>
+
+        <h1>Festival Management</h1>
+
+        <p>Manage all festivals</p>
+
+    </div>
+
+    <button class="primary-btn"
+            onclick="openFestivalModal()">
+
+        + New Festival
+
+    </button>
+
+</div>
+
+<div class="panel">
+
+    <input
+        id="festivalSearch"
+        class="search-box"
+        placeholder="Search Festival..."
+        oninput="filterFestivals()">
+
+    <table class="table">
+
+        <thead>
+
+        <tr>
+
+            <th>Code</th>
+
+            <th>Name</th>
+
+            <th>Governorate</th>
+
+            <th>Coordinator</th>
+
+            <th>Status</th>
+
+            <th></th>
+
+        </tr>
+
+        </thead>
+
+        <tbody id="festivalTable"></tbody>
+
+    </table>
+
+</div>
+
+<div id="festivalModal"></div>
+
+<div id="festivalModal" class="modal">
+
+    <div class="modal-content">
+
+        <div class="modal-header">
+
+            <h2>New Festival</h2>
+
+            <button onclick="closeFestivalModal()">
+                ✕
+            </button>
+
+        </div>
+
+        <div class="form-grid">
+
+            <input id="festivalName" placeholder="Festival Name">
+
+            <input id="governorate" placeholder="Governorate">
+
+            <input id="area" placeholder="Area">
+
+            <input id="warehouse" placeholder="Warehouse">
+
+            <input id="coordinator" placeholder="Coordinator">
+
+            <input id="startDate" type="date">
+
+            <input id="endDate" type="date">
+
+            <input id="startTime" type="time">
+
+            <input id="endTime" type="time">
+
+            <textarea
+                id="festivalNotes"
+                placeholder="Notes">
+            </textarea>
+
+        </div>
+
+        <div class="modal-footer">
+
+            <button
+            class="secondary-btn"
+            onclick="closeFestivalModal()">
+
+                Cancel
+
+            </button>
+
+            <button
+            class="primary-btn"
+            onclick="saveFestival()">
+
+                Save Festival
+
+            </button>
+
+        </div>
+
+    </div>
+
+</div>
