@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzyG12XgF06tg6_8lD9nTSMKjzQjOoq7wi_d9R5KxlbLHWZQt90EJCneXCEt00uNihA/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzvqRGBkZ84jvJHUsyWffB2-lnVtuZH7nvoNN6tHT56tVVbMrAclQl9JzSHxmYcehw/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -243,17 +243,28 @@ async function handleReportPage() {
     // ===============================================================
     //                         SALES / BARCODE
     // ===============================================================
+    const isCancelledProduct = (product) => {
+        const value = String(product?.cancelled ?? '').trim().toLowerCase();
+        return value === 'true' || value === '1' || value === 'نعم';
+    };
+
     const getCampaignProducts = () => {
         const campaignName = campaignSelect.value;
+        let products = [];
         if (campaignName === 'شاملة') {
             const allProducts = new Map();
             Object.values(DB.products || {}).flat().forEach(p => {
                 if (p && p.name) allProducts.set(p.name, p);
             });
-            return Array.from(allProducts.values());
+            products = Array.from(allProducts.values());
+        } else {
+            products = DB.products?.[campaignName] || [];
         }
-        return DB.products?.[campaignName] || [];
+        return products.filter(p => p && p.name && !isCancelledProduct(p));
     };
+
+    const getSaleProducts = () => getCampaignProducts().filter(p => String(p.category ?? '').trim() === 'مادة بيعية');
+    const getTastingProducts = () => getCampaignProducts().filter(p => String(p.category ?? '').trim() === 'مادة تذوق');
 
     const normalizeBarcode = (value) => String(value ?? '').trim();
 
@@ -261,7 +272,7 @@ async function handleReportPage() {
         const code = normalizeBarcode(barcode);
         if (!code) return null;
 
-        const products = getCampaignProducts();
+        const products = getSaleProducts();
         return products.find(p => normalizeBarcode(p.barcode) === code) || null;
     };
 
@@ -326,7 +337,7 @@ async function handleReportPage() {
     };
 
     const createSaleRow = (sale = {}) => {
-        const products = getCampaignProducts();
+        const products = getSaleProducts();
         const existingProducts = Array.from(salesTableBody.querySelectorAll('.sale-product')).map(select => $(select).val());
         if (sale.product && existingProducts.includes(sale.product) && !sale.price) return;
 
@@ -378,22 +389,26 @@ async function handleReportPage() {
     };
 
     const createExpenseRow = (expense = {}) => {
-        const campaignName = campaignSelect.value;
-        let expenseItems = [];
-        if (campaignName === 'شاملة') { expenseItems = [...new Set(Object.values(DB.expenseItems).flat())]; } else { expenseItems = DB.expenseItems[campaignName] || []; }
+        const expenseProducts = getTastingProducts();
         const existingExpenses = Array.from(expensesTableBody.querySelectorAll('.expense-item')).map(select => $(select).val());
         if (expense.item && existingExpenses.includes(expense.item) && !expense.quantity) return;
+
         const row = document.createElement('tr');
-        const expenseOptions = expenseItems.map(item => `<option value="${item}">${item}</option>`).join('');
+        const expenseOptions = expenseProducts.map(product => {
+            const safeName = String(product.name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            return `<option value="${safeName}">${safeName}</option>`;
+        }).join('');
+
         row.innerHTML = `<td><select class="form-select form-select-sm expense-item" required><option value="" selected disabled>اختر...</option>${expenseOptions}</select></td><td><input type="number" class="form-control form-control-sm expense-quantity" value="${expense.quantity || ''}" min="1" required></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
         row.querySelector('.remove-row-btn').addEventListener('click', () => { row.remove(); isFormDirty = true; saveFormState(); });
         const expenseSelect = $(row.querySelector('.expense-item'));
-        initSelect2(expenseSelect, 'اختر المصروف...');
+        initSelect2(expenseSelect, 'اختر مادة التذوق...');
         expensesTableBody.appendChild(row);
         if (expense.item) expenseSelect.val(expense.item).trigger('change');
         if (expense.quantity) row.querySelector('.expense-quantity').value = expense.quantity;
+        row.querySelector('.expense-quantity').addEventListener('input', () => { isFormDirty = true; saveFormState(); });
     };
-    
+
     /**
      * [إضافة جديدة] دالة لإعادة تعيين النموذج بالكامل بدون إعادة تحميل الصفحة
      */
@@ -488,10 +503,7 @@ async function handleReportPage() {
     }
     
     function populateProductSelectionModal(campaignName) {
-        let products = [];
-        if (campaignName === 'شاملة') {
-            const allProducts = new Map(); Object.values(DB.products).flat().forEach(p => allProducts.set(p.name, p)); products = Array.from(allProducts.values());
-        } else { products = DB.products[campaignName] || []; }
+        const products = getSaleProducts();
         productSelectionTbody.innerHTML = '';
         products.forEach(product => { productSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input product-select-check" type="checkbox" value="${product.name}" data-price="${product.price}" style="pointer-events: none;"></div></td><td>${product.name}</td></tr>`); });
         productSearchInput.value = ''; productSearchInput.dispatchEvent(new Event('input'));
@@ -501,10 +513,9 @@ async function handleReportPage() {
     addSelectedProductsBtn.addEventListener('click', () => { productSelectionTbody.querySelectorAll('.product-select-check:checked').forEach(c => createSaleRow({ product: c.value, price: c.dataset.price })); updateSaleTotals(); productModal.hide(); isFormDirty = true; saveFormState(); });
     
     function populateExpenseSelectionModal(campaignName) {
-        let items = [];
-        if (campaignName === 'شاملة') { items = [...new Set(Object.values(DB.expenseItems).flat())]; } else { items = DB.expenseItems[campaignName] || []; }
+        const products = getTastingProducts();
         expenseSelectionTbody.innerHTML = '';
-        items.forEach(item => { expenseSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input expense-select-check" type="checkbox" value="${item}" style="pointer-events: none;"></div></td><td>${item}</td></tr>`); });
+        products.forEach(product => { expenseSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input expense-select-check" type="checkbox" value="${product.name}" style="pointer-events: none;"></div></td><td>${product.name}</td></tr>`); });
         expenseSearchInput.value = ''; expenseSearchInput.dispatchEvent(new Event('input'));
     }
     addExpenseRowBtn.addEventListener('click', () => { const c = campaignSelect.value; if (!c) { alert('يرجى اختيار نوع الحملة أولاً.'); return; } populateExpenseSelectionModal(c); expenseModal.show(); });
