@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzvqRGBkZ84jvJHUsyWffB2-lnVtuZH7nvoNN6tHT56tVVbMrAclQl9JzSHxmYcehw/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyyiS42gCFja9b5keTw_1x5Sx-qQo7AO6oTUawdMt2ACAydZMoKJb_SrAdqjYI_9vBA/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -45,17 +45,21 @@ document.addEventListener('DOMContentLoaded', () => {
 //                      2. جلب البيانات من Google Sheet
 // ===================================================================
 async function getDbData() {
-    const cachedDB = localStorage.getItem('appDB');
-    const cacheTimestamp = localStorage.getItem('dbCacheTimestamp');
+    const APP_DB_VERSION = 'v5';
+    const DB_KEY = `appDB_${APP_DB_VERSION}`;
+    const TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
+    const cachedDB = localStorage.getItem(DB_KEY);
+    const cacheTimestamp = localStorage.getItem(TS_KEY);
     if (cachedDB && cacheTimestamp && (Date.now() - cacheTimestamp) / 60000 < CACHE_DURATION_MINUTES) {
         return JSON.parse(cachedDB);
     }
-    localStorage.removeItem('appDB');
-    localStorage.removeItem('dbCacheTimestamp');
-    const res = await fetch(`${SCRIPT_URL}?action=getInitialData`);
+    localStorage.removeItem(DB_KEY);
+    localStorage.removeItem(TS_KEY);
+    // Add a cache-busting parameter so the browser never reuses an old API response.
+    const res = await fetch(`${SCRIPT_URL}?action=getInitialData&v=${APP_DB_VERSION}&t=${Date.now()}`);
     const dbData = await res.json();
-    localStorage.setItem('appDB', JSON.stringify(dbData));
-    localStorage.setItem('dbCacheTimestamp', Date.now());
+    localStorage.setItem(DB_KEY, JSON.stringify(dbData));
+    localStorage.setItem(TS_KEY, Date.now());
     return dbData;
 }
 
@@ -244,8 +248,10 @@ async function handleReportPage() {
     //                         SALES / BARCODE
     // ===============================================================
     const isCancelledProduct = (product) => {
-        const value = String(product?.cancelled ?? '').trim().toLowerCase();
-        return value === 'true' || value === '1' || value === 'نعم';
+        if (!product) return true;
+        if (product.cancelled === true) return true;
+        const value = String(product.cancelled ?? '').trim().toLowerCase();
+        return value === 'true' || value === '1' || value === 'yes' || value === 'نعم';
     };
 
     const getCampaignProducts = () => {
@@ -263,8 +269,11 @@ async function handleReportPage() {
         return products.filter(p => p && p.name && !isCancelledProduct(p));
     };
 
-    const getSaleProducts = () => getCampaignProducts().filter(p => String(p.category ?? '').trim() === 'مادة بيعية');
-    const getTastingProducts = () => getCampaignProducts().filter(p => String(p.category ?? '').trim() === 'مادة تذوق');
+    const normalizeCategory = (value) => String(value ?? '')
+        .trim()
+        .replace(/\s+/g, ' ');
+    const getSaleProducts = () => getCampaignProducts().filter(p => normalizeCategory(p.category) === 'مادة بيعية');
+    const getTastingProducts = () => getCampaignProducts().filter(p => normalizeCategory(p.category) === 'مادة تذوق');
 
     const normalizeBarcode = (value) => String(value ?? '').trim();
 
@@ -338,6 +347,10 @@ async function handleReportPage() {
 
     const createSaleRow = (sale = {}) => {
         const products = getSaleProducts();
+        // لا نعيد مادة ملغاة/غير متاحة من حالة محلية قديمة.
+        if (sale.product && !products.some(p => p.name === sale.product)) {
+            return;
+        }
         const existingProducts = Array.from(salesTableBody.querySelectorAll('.sale-product')).map(select => $(select).val());
         if (sale.product && existingProducts.includes(sale.product) && !sale.price) return;
 
@@ -647,54 +660,66 @@ async function handleReportPage() {
 
     const startBarcodeCamera = async () => {
         if (typeof Html5Qrcode === 'undefined') {
-            showToast('تعذر تحميل مكتبة الكاميرا. تأكد من الاتصال بالإنترنت.', true);
+            showToast('مكتبة قراءة الباركود بالكاميرا لم تُحمّل. تحقق من اتصال الإنترنت.', true);
             return;
         }
         if (!campaignSelect.value) {
             showToast('يرجى اختيار نوع الحملة أولاً.', true);
-            focusBarcodeInput();
             return;
         }
 
-        document.getElementById('cameraScannerStatus').textContent = 'جارٍ تشغيل الكاميرا...';
+        // الكاميرا في المتصفح تحتاج HTTPS (أو localhost). لا نحول المستخدم إلى حقل الإدخال تلقائياً عند الفشل.
+        if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            const msg = 'الكاميرا تحتاج فتح الموقع عبر HTTPS. إذا كنت تفتحه كملف أو عبر HTTP فلن يسمح المتصفح بالكاميرا.';
+            document.getElementById('cameraScannerStatus').textContent = msg;
+            showToast(msg, true);
+            barcodeCameraModal.show();
+            return;
+        }
+
+        cameraScanLocked = false;
+        document.getElementById('cameraScannerStatus').textContent = 'سيطلب المتصفح السماح باستخدام الكاميرا...';
         barcodeCameraModal.show();
 
         try {
-            html5QrCode = new Html5Qrcode('barcode-reader');
-            const cameras = await Html5Qrcode.getCameras();
-            if (!cameras || cameras.length === 0) throw new Error('لم يتم العثور على كاميرا.');
+            // استخدام facingMode مباشرة أكثر توافقاً مع الهواتف من getCameras().
+            html5QrCode = new Html5Qrcode('barcode-reader', { verbose: false });
+            const scannerConfig = {
+                fps: 10,
+                qrbox: { width: 280, height: 140 },
+                formatsToSupport: [
+                    Html5QrcodeSupportedFormats.CODE_128,
+                    Html5QrcodeSupportedFormats.CODE_39,
+                    Html5QrcodeSupportedFormats.CODE_93,
+                    Html5QrcodeSupportedFormats.EAN_13,
+                    Html5QrcodeSupportedFormats.EAN_8,
+                    Html5QrcodeSupportedFormats.UPC_A,
+                    Html5QrcodeSupportedFormats.UPC_E,
+                    Html5QrcodeSupportedFormats.ITF,
+                    Html5QrcodeSupportedFormats.CODABAR
+                ]
+            };
 
-            const backCamera = cameras.find(c => /back|rear|environment|خلف/i.test(c.label)) || cameras[cameras.length - 1];
-            await html5QrCode.start(
-                backCamera.id,
-                {
-                    fps: 10,
-                    qrbox: { width: 280, height: 140 },
-                    aspectRatio: 1.777778,
-                    formatsToSupport: [
-                        Html5QrcodeSupportedFormats.CODE_128,
-                        Html5QrcodeSupportedFormats.CODE_39,
-                        Html5QrcodeSupportedFormats.CODE_93,
-                        Html5QrcodeSupportedFormats.EAN_13,
-                        Html5QrcodeSupportedFormats.EAN_8,
-                        Html5QrcodeSupportedFormats.UPC_A,
-                        Html5QrcodeSupportedFormats.UPC_E,
-                        Html5QrcodeSupportedFormats.ITF,
-                        Html5QrcodeSupportedFormats.CODABAR
-                    ]
-                },
-                handleScannedBarcode,
-                () => {}
-            );
+            try {
+                await html5QrCode.start({ facingMode: 'environment' }, scannerConfig, handleScannedBarcode, () => {});
+            } catch (environmentError) {
+                console.warn('Back camera unavailable, retrying with any available camera:', environmentError);
+                await html5QrCode.start({ facingMode: 'user' }, scannerConfig, handleScannedBarcode, () => {});
+            }
             document.getElementById('cameraScannerStatus').textContent = 'وجّه الكاميرا نحو الباركود';
         } catch (error) {
             console.error('Barcode camera error:', error);
-            document.getElementById('cameraScannerStatus').textContent = `تعذر تشغيل الكاميرا: ${error.message || error}`;
-            showToast('تعذر تشغيل الكاميرا. تأكد من السماح بالوصول للكاميرا واستخدام HTTPS.', true);
+            const message = error?.name === 'NotAllowedError'
+                ? 'تم رفض إذن الكاميرا. اسمح للمتصفح باستخدام الكاميرا ثم اضغط مسح بالكاميرا مرة أخرى.'
+                : error?.name === 'NotFoundError'
+                    ? 'لم يتم العثور على كاميرا خلفية متاحة على هذا الجهاز.'
+                    : `تعذر تشغيل الكاميرا: ${error?.message || error}`;
+            document.getElementById('cameraScannerStatus').textContent = message;
+            showToast(message, true);
             await stopBarcodeCamera();
+            // لا نغلق النافذة ولا ننقل التركيز إلى حقل الباركود؛ ليعرف المستخدم سبب المشكلة.
         }
     };
-
     scanBarcodeCameraBtn.addEventListener('click', startBarcodeCamera);
     clearBarcodeBtn.addEventListener('click', () => {
         barcodeInput.value = '';
@@ -724,7 +749,6 @@ async function handleReportPage() {
 
     barcodeCameraModalElement.addEventListener('hidden.bs.modal', async () => {
         await stopBarcodeCamera();
-        focusBarcodeInput();
     });
 
     setTimeout(focusBarcodeInput, 300);
