@@ -6,6 +6,8 @@
     <title>تسجيل الدخول - لوحة التحكم</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
     <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0d6efd">
 </head>
 <body class="login-body">
     <div class="login-container">
@@ -44,6 +46,11 @@
 </div>
 <script src="script.js"></script>
 
+<script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js').catch(console.warn));
+        }
+    </script>
 </body>
 </html>
 <!--<img src="images/login-icon.png" alt="صورة المستخدم"  style="max-height: 200px;width: 60%;border-radius: 8px;">

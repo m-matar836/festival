@@ -10,6 +10,115 @@ const EDIT_STATE_KEY = 'reportToEdit';
 let originalCreatedAt = null; 
 
 // ===================================================================
+//                     OFFLINE-FIRST STORAGE
+// ===================================================================
+const OFFLINE_DB_NAME = 'festivalOfflineDB';
+const OFFLINE_DB_VERSION = 1;
+const OFFLINE_QUEUE_STORE = 'pendingReports';
+
+function openOfflineDB() {
+    return new Promise((resolve, reject) => {
+        if (!('indexedDB' in window)) return reject(new Error('IndexedDB غير مدعوم'));
+        const req = indexedDB.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+        req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains(OFFLINE_QUEUE_STORE)) {
+                db.createObjectStore(OFFLINE_QUEUE_STORE, { keyPath: 'localId' });
+            }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function queueReportOffline(reportData) {
+    const db = await openOfflineDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
+        tx.objectStore(OFFLINE_QUEUE_STORE).put({
+            localId: `${reportData.id}_${Date.now()}`,
+            reportData,
+            createdAt: Date.now()
+        });
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+    });
+}
+
+async function getPendingReports() {
+    const db = await openOfflineDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readonly');
+        const req = tx.objectStore(OFFLINE_QUEUE_STORE).getAll();
+        req.onsuccess = () => { db.close(); resolve(req.result || []); };
+        req.onerror = () => { db.close(); reject(req.error); };
+    });
+}
+
+async function removePendingReport(localId) {
+    const db = await openOfflineDB();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
+        tx.objectStore(OFFLINE_QUEUE_STORE).delete(localId);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+    });
+}
+
+async function syncPendingReports() {
+    if (!navigator.onLine) return;
+    let pending = [];
+    try { pending = await getPendingReports(); } catch (e) { return; }
+    for (const item of pending) {
+        try {
+            const res = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action: 'submitReport', payload: item.reportData })
+            });
+            const result = await res.json();
+            if (result.status !== 'success') throw new Error(result.message || 'فشل المزامنة');
+            await removePendingReport(item.localId);
+        } catch (error) {
+            console.warn('Offline sync stopped:', error);
+            break;
+        }
+    }
+    updateOfflineStatus();
+}
+
+async function updateOfflineStatus() {
+    const el = document.getElementById('offline-status');
+    if (!el) return;
+    let pendingCount = 0;
+    try { pendingCount = (await getPendingReports()).length; } catch (e) {}
+    if (!navigator.onLine) {
+        el.textContent = pendingCount ? `🔴 بدون إنترنت — ${pendingCount} تقرير بانتظار المزامنة` : '🔴 بدون إنترنت — العمل محفوظ محلياً';
+        el.style.display = 'block';
+        el.style.background = '#dc3545';
+        el.style.color = '#fff';
+    } else if (pendingCount) {
+        el.textContent = `🟠 متصل — ${pendingCount} تقرير بانتظار المزامنة`;
+        el.style.display = 'block';
+        el.style.background = '#ffc107';
+        el.style.color = '#000';
+    } else {
+        el.textContent = '🟢 متصل';
+        el.style.display = 'block';
+        el.style.background = '#198754';
+        el.style.color = '#fff';
+        setTimeout(() => { if (navigator.onLine) el.style.display = 'none'; }, 2500);
+    }
+}
+
+window.addEventListener('online', () => { updateOfflineStatus(); syncPendingReports(); });
+window.addEventListener('offline', updateOfflineStatus);
+setInterval(() => { if (navigator.onLine) syncPendingReports(); }, 30000);
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => { updateOfflineStatus(); syncPendingReports(); }, 500);
+});
+
+// ===================================================================
 //                      1. التهيئة العامة والتحقق من تسجيل الدخول
 // ===================================================================
 document.addEventListener('DOMContentLoaded', () => {
@@ -45,22 +154,37 @@ document.addEventListener('DOMContentLoaded', () => {
 //                      2. جلب البيانات من Google Sheet
 // ===================================================================
 async function getDbData() {
-    const APP_DB_VERSION = 'v5';
+    const APP_DB_VERSION = 'v6-offline';
     const DB_KEY = `appDB_${APP_DB_VERSION}`;
     const TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
     const cachedDB = localStorage.getItem(DB_KEY);
     const cacheTimestamp = localStorage.getItem(TS_KEY);
-    if (cachedDB && cacheTimestamp && (Date.now() - cacheTimestamp) / 60000 < CACHE_DURATION_MINUTES) {
-        return JSON.parse(cachedDB);
+
+    if (cachedDB) {
+        const ageMinutes = cacheTimestamp ? (Date.now() - Number(cacheTimestamp)) / 60000 : Infinity;
+        // استخدم الكاش مباشرة إذا كان Offline، حتى لو انتهت مدته.
+        if (!navigator.onLine || (cacheTimestamp && ageMinutes < CACHE_DURATION_MINUTES)) {
+            return JSON.parse(cachedDB);
+        }
     }
-    localStorage.removeItem(DB_KEY);
-    localStorage.removeItem(TS_KEY);
-    // Add a cache-busting parameter so the browser never reuses an old API response.
-    const res = await fetch(`${SCRIPT_URL}?action=getInitialData&v=${APP_DB_VERSION}&t=${Date.now()}`);
-    const dbData = await res.json();
-    localStorage.setItem(DB_KEY, JSON.stringify(dbData));
-    localStorage.setItem(TS_KEY, Date.now());
-    return dbData;
+
+    try {
+        const res = await fetch(`${SCRIPT_URL}?action=getInitialData&v=${APP_DB_VERSION}&t=${Date.now()}`, {
+            cache: 'no-store'
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const dbData = await res.json();
+        if (dbData.status === 'error') throw new Error(dbData.message || 'API error');
+        localStorage.setItem(DB_KEY, JSON.stringify(dbData));
+        localStorage.setItem(TS_KEY, Date.now());
+        return dbData;
+    } catch (error) {
+        if (cachedDB) {
+            console.warn('Using cached DB because network request failed:', error);
+            return JSON.parse(cachedDB);
+        }
+        throw error;
+    }
 }
 
 // ===================================================================
@@ -409,7 +533,7 @@ async function handleReportPage() {
         const row = document.createElement('tr');
         const expenseOptions = expenseProducts.map(product => {
             const safeName = String(product.name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-            return `<option value="${safeName}">${safeName}</option>`;
+            return `<option value="${safeName}" data-barcode="${normalizeBarcode(product.barcode)}">${safeName}</option>`;
         }).join('');
 
         row.innerHTML = `<td><select class="form-select form-select-sm expense-item" required><option value="" selected disabled>اختر...</option>${expenseOptions}</select></td><td><input type="number" class="form-control form-control-sm expense-quantity" value="${expense.quantity || ''}" min="1" required></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
@@ -476,13 +600,48 @@ async function handleReportPage() {
         reportData.supervisor = supervisorInput.value;
         reportData.participants = [...new Set([reportData.coordinator, reportData.inventoryDependency, reportData.supervisor, ...reportData.promoters].filter(Boolean))];
         
-        fetch(SCRIPT_URL, { method: 'POST', body: JSON.stringify({ action: 'submitReport', payload: reportData }) })
-            .then(res => res.json())
-            .then(result => {
-                if (result.status !== 'success') {
-                    throw new Error(result.message || 'فشل الحفظ في الخلفية');
+        const saveOnlineOrQueue = async () => {
+            if (!navigator.onLine) {
+                await queueReportOffline(reportData);
+                return { queued: true };
+            }
+            try {
+                const res = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action: 'submitReport', payload: reportData })
+                });
+                const result = await res.json();
+                if (result.status !== 'success') throw new Error(result.message || 'فشل الحفظ');
+                return result;
+            } catch (error) {
+                // في حالة انقطاع الشبكة أثناء الإرسال، خزّن التقرير للمزامنة.
+                const networkFailure = !navigator.onLine || error instanceof TypeError ||
+                    /failed to fetch|network|load failed/i.test(String(error.message || ''));
+                if (networkFailure) {
+                    await queueReportOffline(reportData);
+                    return { queued: true };
                 }
+                throw error;
+            }
+        };
+
+        saveOnlineOrQueue()
+            .then(result => {
                 localStorage.removeItem('reportsCache');
+                if (result.queued) {
+                    updateOfflineStatus();
+                    if (addAnother) {
+                        showToast('تم حفظ التقرير محلياً وسيتم إرساله تلقائياً عند عودة الإنترنت.');
+                    } else {
+                        document.querySelector('#successModal .fs-5').textContent = 'تم حفظ التقرير محلياً — بانتظار الإنترنت للمزامنة';
+                        document.getElementById('success-spinner').style.display = 'none';
+                        viewReportBtn.classList.add('disabled');
+                        successModal.show();
+                    }
+                    return;
+                }
+
                 if (addAnother) {
                     showToast('تم حفظ التقرير السابق بنجاح.');
                 } else {
@@ -496,7 +655,7 @@ async function handleReportPage() {
                 isFormDirty = true;
                 saveFormState();
                 if (addAnother) {
-                    showToast(`فشل حفظ التقرير السابق: ${error.message}`, true);
+                    showToast(`فشل حفظ التقرير: ${error.message}`, true);
                 } else {
                     successModal.hide();
                     alert(`فشل إرسال التقرير: ${error.message}`);
@@ -615,6 +774,71 @@ async function handleReportPage() {
         loadFormState();
     }
     
+
+    // ===============================================================
+    //                  EXPENSE / TASTING BARCODE
+    // ===============================================================
+    const expenseBarcodeInput = document.getElementById('expenseBarcodeInput');
+    const scanExpenseBarcodeCameraBtn = document.getElementById('scanExpenseBarcodeCameraBtn');
+    const clearExpenseBarcodeBtn = document.getElementById('clearExpenseBarcodeBtn');
+    let expenseBarcodeDebounceTimer = null;
+
+    const findExpenseByBarcode = (barcode) => {
+        const code = normalizeBarcode(barcode);
+        if (!code) return null;
+        return getTastingProducts().find(p => normalizeBarcode(p.barcode) === code) || null;
+    };
+
+    const findExpenseRowByProduct = (productName) => {
+        return Array.from(expensesTableBody.querySelectorAll('tr')).find(row =>
+            $(row.querySelector('.expense-item')).val() === productName
+        ) || null;
+    };
+
+    const focusExpenseBarcodeInput = () => {
+        if (expenseBarcodeInput) setTimeout(() => expenseBarcodeInput.focus(), 50);
+    };
+
+    const addProductToExpensesByBarcode = (rawBarcode) => {
+        const barcode = normalizeBarcode(rawBarcode);
+        const status = document.getElementById('expenseBarcodeStatus');
+        if (!barcode) return false;
+
+        if (!campaignSelect.value) {
+            status.textContent = 'يرجى اختيار نوع الحملة أولاً.';
+            status.className = 'small mt-2 text-danger';
+            showToast('يرجى اختيار نوع الحملة أولاً.', true);
+            focusExpenseBarcodeInput();
+            return false;
+        }
+
+        const product = findExpenseByBarcode(barcode);
+        if (!product) {
+            status.textContent = `الباركود ${barcode} غير موجود ضمن مواد التذوق للحملة الحالية.`;
+            status.className = 'small mt-2 text-danger';
+            showToast(`الباركود ${barcode} غير موجود ضمن مواد التذوق.`, true);
+            focusExpenseBarcodeInput();
+            return false;
+        }
+
+        const existingRow = findExpenseRowByProduct(product.name);
+        if (existingRow) {
+            const quantityInput = existingRow.querySelector('.expense-quantity');
+            quantityInput.value = (parseInt(quantityInput.value, 10) || 0) + 1;
+            status.textContent = `تمت زيادة كمية «${product.name}» إلى ${quantityInput.value}.`;
+        } else {
+            createExpenseRow({ item: product.name, quantity: 1, barcode });
+            status.textContent = `تمت إضافة «${product.name}» × 1.`;
+        }
+
+        status.className = 'small mt-2 text-success';
+        isFormDirty = true;
+        saveFormState();
+        expenseBarcodeInput.value = '';
+        focusExpenseBarcodeInput();
+        return true;
+    };
+
     // ===============================================================
     //                 USB SCANNER + CAMERA SCANNER
     // ===============================================================
@@ -626,17 +850,15 @@ async function handleReportPage() {
     let html5QrCode = null;
     let barcodeDebounceTimer = null;
     let cameraScanLocked = false;
+    let cameraTarget = 'sales';
 
     const stopBarcodeCamera = async () => {
         if (!html5QrCode) return;
         try {
             const state = html5QrCode.getState?.();
-            // 2 = SCANNING in html5-qrcode
             if (state === 2) await html5QrCode.stop();
-        } catch (error) {
-            console.warn('Barcode camera stop:', error);
-        }
-        try { await html5QrCode.clear(); } catch (error) { /* already cleared */ }
+        } catch (error) { console.warn('Barcode camera stop:', error); }
+        try { await html5QrCode.clear(); } catch (error) {}
         html5QrCode = null;
         cameraScanLocked = false;
     };
@@ -647,10 +869,12 @@ async function handleReportPage() {
         if (!barcode) return;
 
         cameraScanLocked = true;
-        const added = addProductToSalesByBarcode(barcode);
-        const status = document.getElementById('cameraScannerStatus');
-        status.textContent = added ? 'تمت إضافة المنتج. سيتم إغلاق الكاميرا...' : 'لم يتم العثور على المنتج.';
+        const added = cameraTarget === 'expense'
+            ? addProductToExpensesByBarcode(barcode)
+            : addProductToSalesByBarcode(barcode);
 
+        const status = document.getElementById('cameraScannerStatus');
+        status.textContent = added ? 'تمت إضافة المادة. سيتم إغلاق الكاميرا...' : 'لم يتم العثور على المادة.';
         setTimeout(async () => {
             await stopBarcodeCamera();
             barcodeCameraModal.hide();
@@ -658,73 +882,145 @@ async function handleReportPage() {
         }, added ? 350 : 900);
     };
 
-    const startBarcodeCamera = async () => {
+    const startBarcodeCamera = async (target = 'sales') => {
+        cameraTarget = target;
+        const status = document.getElementById('cameraScannerStatus');
+
         if (typeof Html5Qrcode === 'undefined') {
-            showToast('مكتبة قراءة الباركود بالكاميرا لم تُحمّل. تحقق من اتصال الإنترنت.', true);
+            const msg = 'مكتبة قراءة الباركود بالكاميرا لم تُحمّل. افتح الموقع مرة واحدة مع الإنترنت ثم حاول مجدداً.';
+            status.textContent = msg;
+            showToast(msg, true);
+            barcodeCameraModal.show();
             return;
         }
         if (!campaignSelect.value) {
             showToast('يرجى اختيار نوع الحملة أولاً.', true);
             return;
         }
-
-        // الكاميرا في المتصفح تحتاج HTTPS (أو localhost). لا نحول المستخدم إلى حقل الإدخال تلقائياً عند الفشل.
-        if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            const msg = 'الكاميرا تحتاج فتح الموقع عبر HTTPS. إذا كنت تفتحه كملف أو عبر HTTP فلن يسمح المتصفح بالكاميرا.';
-            document.getElementById('cameraScannerStatus').textContent = msg;
+        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+            const msg = 'الكاميرا تحتاج HTTPS أو localhost.';
+            status.textContent = msg;
             showToast(msg, true);
             barcodeCameraModal.show();
             return;
         }
 
         cameraScanLocked = false;
-        document.getElementById('cameraScannerStatus').textContent = 'سيطلب المتصفح السماح باستخدام الكاميرا...';
+        status.textContent = target === 'expense'
+            ? 'جاري تجهيز الكاميرا لمواد التذوق...'
+            : 'جاري تجهيز الكاميرا للمواد البيعية...';
         barcodeCameraModal.show();
 
-        try {
-            // استخدام facingMode مباشرة أكثر توافقاً مع الهواتف من getCameras().
-            html5QrCode = new Html5Qrcode('barcode-reader', { verbose: false });
-            const scannerConfig = {
-                fps: 10,
-                qrbox: { width: 280, height: 140 },
-                formatsToSupport: [
-                    Html5QrcodeSupportedFormats.CODE_128,
-                    Html5QrcodeSupportedFormats.CODE_39,
-                    Html5QrcodeSupportedFormats.CODE_93,
-                    Html5QrcodeSupportedFormats.EAN_13,
-                    Html5QrcodeSupportedFormats.EAN_8,
-                    Html5QrcodeSupportedFormats.UPC_A,
-                    Html5QrcodeSupportedFormats.UPC_E,
-                    Html5QrcodeSupportedFormats.ITF,
-                    Html5QrcodeSupportedFormats.CODABAR
-                ]
-            };
+        const scannerConfig = {
+            fps: 10,
+            qrbox: { width: 280, height: 140 },
+            formatsToSupport: [
+                Html5QrcodeSupportedFormats.CODE_128,
+                Html5QrcodeSupportedFormats.CODE_39,
+                Html5QrcodeSupportedFormats.CODE_93,
+                Html5QrcodeSupportedFormats.EAN_13,
+                Html5QrcodeSupportedFormats.EAN_8,
+                Html5QrcodeSupportedFormats.UPC_A,
+                Html5QrcodeSupportedFormats.UPC_E,
+                Html5QrcodeSupportedFormats.ITF,
+                Html5QrcodeSupportedFormats.CODABAR
+            ]
+        };
 
-            try {
-                await html5QrCode.start({ facingMode: 'environment' }, scannerConfig, handleScannedBarcode, () => {});
-            } catch (environmentError) {
-                console.warn('Back camera unavailable, retrying with any available camera:', environmentError);
-                await html5QrCode.start({ facingMode: 'user' }, scannerConfig, handleScannedBarcode, () => {});
+        try {
+            // لا نستخدم facingMode نهائياً. نطلب الكاميرات ونمرر cameraId مباشرة.
+            const cameras = await Html5Qrcode.getCameras();
+            if (!cameras || cameras.length === 0) {
+                throw new DOMException('لم يتم العثور على كاميرا متاحة.', 'NotFoundError');
             }
-            document.getElementById('cameraScannerStatus').textContent = 'وجّه الكاميرا نحو الباركود';
+
+            // html5-qrcode 2.3.8 expects a non-empty camera id string.
+            // Some browsers expose the device id as `deviceId` instead of `id`,
+            // so normalize all common shapes before calling start().
+            const normalizedCameras = cameras.map(camera => {
+                const isString = typeof camera === 'string';
+                return {
+                    raw: camera,
+                    id: String(
+                        isString
+                            ? camera
+                            : (camera?.id ??
+                               camera?.deviceId ??
+                               camera?.cameraId ??
+                               '')
+                    ).trim(),
+                    label: String(isString ? '' : (camera?.label || '')).trim()
+                };
+            }).filter(camera => camera.id);
+
+            if (!normalizedCameras.length) {
+                throw new DOMException(
+                    'لم يتمكن المتصفح من توفير معرف للكاميرا.',
+                    'NotFoundError'
+                );
+            }
+
+            const selectedCamera =
+                normalizedCameras.find(camera => {
+                    const label = camera.label.toLowerCase();
+                    return label.includes('back') ||
+                           label.includes('rear') ||
+                           label.includes('environment') ||
+                           label.includes('خلف');
+                }) || normalizedCameras[0];
+
+            const cameraId = selectedCamera.id;
+
+            // Safety check: never call start() with an empty/undefined camera id.
+            if (typeof cameraId !== 'string' || !cameraId.trim()) {
+                throw new DOMException(
+                    'معرف الكاميرا غير صالح.',
+                    'NotFoundError'
+                );
+            }
+
+            html5QrCode = new Html5Qrcode('barcode-reader', { verbose: false });
+
+            await html5QrCode.start(
+                cameraId,
+                scannerConfig,
+                handleScannedBarcode,
+                () => {}
+            );
+
+            status.textContent = target === 'expense'
+                ? 'وجّه الكاميرا نحو باركود مادة التذوق'
+                : 'وجّه الكاميرا نحو باركود المادة البيعية';
         } catch (error) {
             console.error('Barcode camera error:', error);
-            const message = error?.name === 'NotAllowedError'
-                ? 'تم رفض إذن الكاميرا. اسمح للمتصفح باستخدام الكاميرا ثم اضغط مسح بالكاميرا مرة أخرى.'
-                : error?.name === 'NotFoundError'
-                    ? 'لم يتم العثور على كاميرا خلفية متاحة على هذا الجهاز.'
-                    : `تعذر تشغيل الكاميرا: ${error?.message || error}`;
-            document.getElementById('cameraScannerStatus').textContent = message;
+            let message = `تعذر تشغيل الكاميرا: ${error?.name || ''} ${error?.message || error}`;
+
+            if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
+                message = 'تم رفض إذن الكاميرا. اسمح للمتصفح باستخدام الكاميرا ثم أعد المحاولة.';
+            } else if (error?.name === 'NotFoundError') {
+                message = 'لم يتم العثور على كاميرا متاحة على الجهاز.';
+            } else if (error?.name === 'NotReadableError' || error?.name === 'AbortError') {
+                message = 'الكاميرا مستخدمة من تطبيق أو صفحة أخرى. أغلقها ثم أعد المحاولة.';
+            }
+
+            status.textContent = message;
             showToast(message, true);
             await stopBarcodeCamera();
-            // لا نغلق النافذة ولا ننقل التركيز إلى حقل الباركود؛ ليعرف المستخدم سبب المشكلة.
         }
     };
-    scanBarcodeCameraBtn.addEventListener('click', startBarcodeCamera);
+
+    scanBarcodeCameraBtn.addEventListener('click', () => startBarcodeCamera('sales'));
+    scanExpenseBarcodeCameraBtn?.addEventListener('click', () => startBarcodeCamera('expense'));
+
     clearBarcodeBtn.addEventListener('click', () => {
         barcodeInput.value = '';
         document.getElementById('barcodeStatus').textContent = '';
         focusBarcodeInput();
+    });
+    clearExpenseBarcodeBtn?.addEventListener('click', () => {
+        expenseBarcodeInput.value = '';
+        document.getElementById('expenseBarcodeStatus').textContent = '';
+        focusExpenseBarcodeInput();
     });
 
     barcodeInput.addEventListener('keydown', (event) => {
@@ -734,16 +1030,30 @@ async function handleReportPage() {
             addProductToSalesByBarcode(barcodeInput.value);
         }
     });
-
-    // دعم أجهزة USB التي لا ترسل Enter: إذا وصل نص الباركود بسرعة، تتم المعالجة تلقائياً.
     barcodeInput.addEventListener('input', () => {
         clearTimeout(barcodeDebounceTimer);
         const value = normalizeBarcode(barcodeInput.value);
         if (value.length < 6) return;
         barcodeDebounceTimer = setTimeout(() => {
-            if (document.activeElement === barcodeInput && normalizeBarcode(barcodeInput.value).length >= 6) {
+            if (document.activeElement === barcodeInput && normalizeBarcode(barcodeInput.value).length >= 6)
                 addProductToSalesByBarcode(barcodeInput.value);
-            }
+        }, 250);
+    });
+
+    expenseBarcodeInput?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            clearTimeout(expenseBarcodeDebounceTimer);
+            addProductToExpensesByBarcode(expenseBarcodeInput.value);
+        }
+    });
+    expenseBarcodeInput?.addEventListener('input', () => {
+        clearTimeout(expenseBarcodeDebounceTimer);
+        const value = normalizeBarcode(expenseBarcodeInput.value);
+        if (value.length < 6) return;
+        expenseBarcodeDebounceTimer = setTimeout(() => {
+            if (document.activeElement === expenseBarcodeInput && normalizeBarcode(expenseBarcodeInput.value).length >= 6)
+                addProductToExpensesByBarcode(expenseBarcodeInput.value);
         }, 250);
     });
 
