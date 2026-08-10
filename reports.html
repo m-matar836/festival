@@ -34,6 +34,9 @@
                     </li>
                 </ul>
                 <div class="d-flex align-items-center me-auto">
+                    <button type="button" class="btn btn-sm btn-outline-primary me-2" data-refresh-cache title="جلب أحدث البيانات من Google Sheets">
+                        <i class="fa-solid fa-arrows-rotate me-1"></i>تحديث البيانات
+                    </button>
                     <span id="welcomeMessage" class="navbar-text me-3"></span>&nbsp;&nbsp; 
                     <button id="logoutBtn" class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-sign-out-alt me-1"></i>تسجيل الخروج</button>
                 </div>
@@ -63,8 +66,8 @@
                             <div class="col-md-4"><label class="form-label">المحافظة</label><select id="governorate" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
                             <div class="col-md-4"><label class="form-label">المنطقة</label><select id="region" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
                             <div class="col-md-4"><label class="form-label">اسم المحل</label><select id="market_name" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
-                            <div class="col-md-4"><label class="form-label">نوع الحملة</label><select id="campaign" class="form-select" required><option value="" selected disabled>اختر...</option><option value="بن الحموي">بن الحموي</option><option value="سيتي كافيه">سيتي كافيه</option><option value="مرة سائلة">مرة سائلة</option><option value="شاملة">شاملة</option></select></div>
-                            <div class="col-md-4"><label class="form-label">نوع الحدث</label><select id="event" class="form-select" required><option value="" selected disabled>اختر...</option><option value="ترويج مباشر">ترويج مباشر</option><option value="ترويج وبيع غير مباشر">ترويج وبيع غير مباشر</option><option value="ترويج مولات">ترويج مولات</option></select></div>
+                            <div class="col-md-4"><label class="form-label">نوع الحملة</label><select id="campaign" class="form-select" required><option value="" selected disabled>اختر...</option><option value="بن الحموي">بن الحموي</option><option value="سيتي كافيه">سيتي كافيه</option><option value="مرة سائلة">مرة سائلة</option><option value="شاملة">شاملة</option><option value="مهرجان">مهرجان</option></select></div>
+                            <div class="col-md-4"><label class="form-label">نوع الحدث</label><select id="event" class="form-select" required><option value="" selected disabled>اختر...</option><option value="ترويج مباشر">ترويج مباشر</option><option value="ترويج وبيع غير مباشر">ترويج وبيع غير مباشر</option><option value="ترويج وبيع مباشر">ترويج وبيع مباشر</option><option value="ترويج مولات">ترويج مولات</option></select></div>
                             <div class="col-md-4"><label class="form-label">عدد أيام الحدث</label><input type="number" id="eventDays" class="form-control" min="1" value="1" required/></div>
                             <div class="col-md-4"><label class="form-label">التاريخ</label><input type="date" id="date" class="form-control" required/></div>
                             <div class="col-md-4"><label class="form-label">من الساعة</label><input type="time" id="timeFrom" class="form-control" required/></div>
@@ -73,11 +76,18 @@
                             <div class="col-md-4"><label class="form-label">المشرف</label><input type="text" id="supervisor" class="form-control" readonly></div>
                             <div class="col-md-4"><label class="form-label">تبعية الجرد</label><select id="inventoryDependency" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
                             <div class="col-md-4"><label class="form-label">منسق النقطة</label><select id="coordinator" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
-                            <div class="col-md-3"><label class="form-label">مروج 1</label><select id="promoter1" class="form-select"><option value="" selected disabled>اختر...</option></select></div>
-                            <div class="col-md-3"><label class="form-label">مروج 2</label><select id="promoter2" class="form-select"><option value="" selected disabled>اختر...</option></select></div>
-                            <div class="col-md-3"><label class="form-label">مروج 3</label><select id="promoter3" class="form-select"><option value="" selected disabled>اختر...</option></select></div>
-                            <div class="col-md-3"><label class="form-label">مروج 4</label><select id="promoter4" class="form-select"><option value="" selected disabled>اختر...</option></select></div>
-                        </div>
+                            <div class="col-md-12">
+    <label class="form-label">الأشخاص المتواجدين ضمن النقطة</label>
+    <input type="hidden" id="promoter1" value="">
+    <input type="hidden" id="promoter2" value="">
+    <input type="hidden" id="promoter3" value="">
+    <input type="hidden" id="promoter4" value="">
+    <button type="button" class="btn btn-outline-primary w-100 text-start" id="openPromotersBtn">
+        <i class="fa-solid fa-users me-1"></i>
+        <span id="selectedPromotersText">اختر الأشخاص المتواجدين ضمن النقطة...</span>
+    </button>
+    <div id="selectedPromotersBadges" class="mt-2 d-flex flex-wrap gap-1"></div>
+</div>
                     </div>
                 </div>
             </div>
@@ -215,7 +225,34 @@
         </div>
     </div>
 
-    <!-- MODAL FOR BARCODE CAMERA -->
+    <!-- MODAL FOR PROMOTERS AT POINT -->
+<div class="modal fade" id="promotersSelectionModal" tabindex="-1" aria-labelledby="promotersSelectionModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="promotersSelectionModalLabel">الأشخاص المتواجدين ضمن النقطة</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="promotersSearchInput" class="form-control mb-3" placeholder="ابحث عن موظف...">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle" id="promotersSelectionTable">
+                        <thead><tr><th style="width:70px;">اختيار</th><th>اسم الموظف</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="promotersEmptyMessage" class="text-center text-muted d-none">لا يوجد مروجون متاحون.</div>
+                <div class="alert alert-info py-2 mb-0 mt-3">يمكن اختيار جميع الأشخاص المتواجدين مباشرة، وسيتم حفظهم مع التقرير.</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                <button type="button" class="btn btn-primary" id="savePromotersBtn"><i class="fa-solid fa-check me-1"></i> حفظ الأشخاص المحددين</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL FOR BARCODE CAMERA -->
     <div class="modal fade" id="barcodeCameraModal" tabindex="-1" aria-labelledby="barcodeCameraModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">

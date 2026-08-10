@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyyiS42gCFja9b5keTw_1x5Sx-qQo7AO6oTUawdMt2ACAydZMoKJb_SrAdqjYI_9vBA/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbysIp8G9imzXzCXjxvehws3pKiQk8WNNzS1t_DQcrbhePNjfH8iwmP-TVNRs-COyr4m/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -115,6 +115,7 @@ window.addEventListener('online', () => { updateOfflineStatus(); syncPendingRepo
 window.addEventListener('offline', updateOfflineStatus);
 setInterval(() => { if (navigator.onLine) syncPendingReports(); }, 30000);
 document.addEventListener('DOMContentLoaded', () => {
+    setupCacheRefreshButtons();
     setTimeout(() => { updateOfflineStatus(); syncPendingReports(); }, 500);
 });
 
@@ -154,9 +155,8 @@ document.addEventListener('DOMContentLoaded', () => {
 //                      2. جلب البيانات من Google Sheet
 // ===================================================================
 async function getDbData() {
-    const APP_DB_VERSION = 'v6-offline';
-    const DB_KEY = `appDB_${APP_DB_VERSION}`;
-    const TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
+    const DB_KEY = APP_DB_KEY;
+    const TS_KEY = APP_DB_TS_KEY;
     const cachedDB = localStorage.getItem(DB_KEY);
     const cacheTimestamp = localStorage.getItem(TS_KEY);
 
@@ -185,6 +185,138 @@ async function getDbData() {
         }
         throw error;
     }
+}
+
+// ===================================================================
+//                 CACHE REFRESH / FAST DATA UPDATE
+// ===================================================================
+const APP_DB_VERSION = 'v10-offline';
+const APP_DB_KEY = `appDB_${APP_DB_VERSION}`;
+const APP_DB_TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
+
+let cacheRefreshInProgress = false;
+
+async function refreshAppCache({ silent = false } = {}) {
+    if (cacheRefreshInProgress) return { ok: false, busy: true };
+    if (!navigator.onLine) {
+        if (!silent) alert('لا يمكن تحديث البيانات بدون اتصال بالإنترنت.');
+        return { ok: false, offline: true };
+    }
+
+    cacheRefreshInProgress = true;
+    const buttons = document.querySelectorAll('[data-refresh-cache]');
+    buttons.forEach(btn => {
+        btn.disabled = true;
+        btn.dataset.originalHtml = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i>جاري التحديث...';
+    });
+
+    try {
+        // cache: no-store + timestamp ensures Google Apps Script is queried for fresh data.
+        const buildRefreshUrl = () =>
+            `${SCRIPT_URL}?action=getInitialData&forceRefresh=1&v=${encodeURIComponent(APP_DB_VERSION)}&t=${Date.now()}&_=refresh`;
+
+        let response = null;
+        let lastError = null;
+
+        // Try twice because Google Apps Script may transiently redirect/wake the deployment.
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 30000);
+            try {
+                response = await fetch(buildRefreshUrl(), {
+                    method: 'GET',
+                    cache: 'no-store',
+                    redirect: 'follow',
+                    signal: controller.signal
+                });
+                if (response.ok) break;
+                lastError = new Error(`HTTP ${response.status}`);
+            } catch (err) {
+                lastError = err;
+            } finally {
+                clearTimeout(timeout);
+            }
+            if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 800));
+        }
+
+        if (!response || !response.ok) {
+            throw lastError || new Error('تعذر الاتصال بخدمة تحديث البيانات');
+        }
+
+        const freshDB = await response.json();
+        if (!freshDB || freshDB.status === 'error') {
+            throw new Error(freshDB?.message || 'فشل جلب البيانات');
+        }
+
+        // Replace the cache only after a complete successful response.
+        localStorage.setItem(APP_DB_KEY, JSON.stringify(freshDB));
+        localStorage.setItem(APP_DB_TS_KEY, String(Date.now()));
+
+        // Tell the current page that fresh data is available.
+        window.dispatchEvent(new CustomEvent('dbCacheRefreshed', { detail: freshDB }));
+
+        // Update the Service Worker itself without deleting the working cache first.
+        if ('serviceWorker' in navigator) {
+            try {
+                const registrations = await navigator.serviceWorker.getRegistrations();
+                await Promise.all(registrations.map(reg => reg.update()));
+            } catch (swError) {
+                console.warn('Service Worker update skipped:', swError);
+            }
+        }
+
+        buttons.forEach(btn => {
+            btn.classList.remove('btn-outline-primary');
+            btn.classList.add('btn-outline-success');
+            btn.innerHTML = '<i class="fa-solid fa-check me-1"></i>تم التحديث';
+        });
+
+        setTimeout(() => {
+            buttons.forEach(btn => {
+                btn.classList.remove('btn-outline-success');
+                btn.classList.add('btn-outline-primary');
+                btn.innerHTML = btn.dataset.originalHtml || '<i class="fa-solid fa-arrows-rotate me-1"></i>تحديث البيانات';
+                btn.disabled = false;
+            });
+        }, 1500);
+
+        return { ok: true, data: freshDB };
+    } catch (error) {
+        console.error('Cache refresh failed:', error);
+        buttons.forEach(btn => {
+            btn.innerHTML = '<i class="fa-solid fa-triangle-exclamation me-1"></i>فشل التحديث';
+        });
+        setTimeout(() => {
+            buttons.forEach(btn => {
+                btn.innerHTML = btn.dataset.originalHtml || '<i class="fa-solid fa-arrows-rotate me-1"></i>تحديث البيانات';
+                btn.disabled = false;
+            });
+        }, 2000);
+
+        if (!silent) {
+            const message = error.name === 'AbortError'
+                ? 'انتهت مهلة الاتصال. تحقق من الإنترنت وحاول مرة أخرى.'
+                : (error instanceof TypeError && /fetch/i.test(error.message || '')
+                    ? 'تعذر الاتصال بخدمة تحديث البيانات. تأكد من نشر آخر نسخة من Google Apps Script ثم حاول مرة أخرى.'
+                    : `تعذر تحديث البيانات: ${error.message || error}`);
+            alert(message);
+        }
+        return { ok: false, error };
+    } finally {
+        cacheRefreshInProgress = false;
+    }
+}
+
+function setupCacheRefreshButtons() {
+    document.querySelectorAll('[data-refresh-cache]').forEach(btn => {
+        if (btn.dataset.refreshBound === '1') return;
+        btn.dataset.refreshBound = '1';
+        btn.addEventListener('click', async (event) => {
+            event.preventDefault();
+            await refreshAppCache();
+        });
+    });
 }
 
 // ===================================================================
@@ -247,12 +379,37 @@ async function handleReportPage() {
     const form = document.getElementById('reportForm');
     form.style.display = 'none';
     mainContainer.insertAdjacentHTML('afterbegin', `<div id="loading-spinner" class="text-center p-5"><i class="fa-solid fa-spinner fa-spin fa-2x"></i><p class="mt-2">جارِ تهيئة النموذج...</p></div>`);
-    const DB = await getDbData();
+    let DB = await getDbData();
     if (!DB) {
         const logoutOnClick = "localStorage.clear(); sessionStorage.clear(); window.location.href='index.html'; return false;";
         mainContainer.innerHTML = `<div class="alert alert-danger">فشل تحميل البيانات الأساسية. يرجى <a href="#" onclick="${logoutOnClick}">تسجيل الخروج</a> والمحاولة مرة أخرى.</div>`;
         return;
     }
+    // Update the in-memory DB immediately when the user refreshes the cache.
+    // No page reload is needed, so an unfinished report is not lost.
+    window.addEventListener('dbCacheRefreshed', (event) => {
+        if (!event.detail) return;
+        DB = event.detail;
+        try {
+            // Rebuild the main selects from the fresh data where applicable.
+            const selectedGovernorate = governorateSelect.value;
+            const selectedRegion = regionSelect.value;
+            const selectedMarket = marketSelect.value;
+            const selectedCampaign = campaignSelect.value;
+
+            if (typeof populateSelect === 'function') {
+                populateSelect(governorateSelect, DB.governorates || [], selectedGovernorate);
+                populateSelect(regionSelect, DB.regions || [], selectedRegion);
+                populateSelect(marketSelect, DB.markets || [], selectedMarket);
+            }
+
+            // Re-run dependent product filtering without touching existing rows.
+            if (typeof updateProductAvailability === 'function') updateProductAvailability();
+        } catch (e) {
+            console.warn('In-page DB refresh UI update skipped:', e);
+        }
+    });
+
     document.getElementById('loading-spinner').remove();
     form.style.display = 'block';
 
@@ -285,6 +442,7 @@ async function handleReportPage() {
         inventoryDependency: $('#inventoryDependency').val(), coordinator: $('#coordinator').val(),
         promoter1: $('#promoter1').val(), promoter2: $('#promoter2').val(),
         promoter3: $('#promoter3').val(), promoter4: $('#promoter4').val(),
+        promoters: getSelectedPromoters(),
         notes: document.getElementById('notes').value,
         sales: Array.from(salesTableBody.querySelectorAll('tr')).map(r => ({ product: $(r.querySelector('.sale-product')).val(), price: r.querySelector('.sale-price').value, quantity: r.querySelector('.sale-quantity').value })),
         expenses: Array.from(expensesTableBody.querySelectorAll('tr')).map(r => ({ item: $(r.querySelector('.expense-item')).val(), quantity: r.querySelector('.expense-quantity').value })),
@@ -306,7 +464,7 @@ async function handleReportPage() {
         $('#promoter1').val(state.promoter1).trigger('change');
         $('#promoter2').val(state.promoter2).trigger('change');
         $('#promoter3').val(state.promoter3).trigger('change');
-        $('#promoter4').val(state.promoter4).trigger('change');
+        setSelectedPromoters([state.promoter1, state.promoter2, state.promoter3, state.promoter4]);
         if (state.governorate) {
             $('#governorate').val(state.governorate).trigger('change');
             if (state.region) {
@@ -326,6 +484,10 @@ async function handleReportPage() {
 
     reportForm.addEventListener('input', () => { isFormDirty = true; saveFormState(); });
     window.addEventListener('beforeunload', (event) => { if (isFormDirty) { event.preventDefault(); event.returnValue = ''; } });
+
+    const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    }[char]));
 
     const initSelect2 = (selector, placeholder, allowTags = false) => { 
         $(selector).select2({ 
@@ -347,14 +509,98 @@ async function handleReportPage() {
         options.forEach(opt => select.innerHTML += `<option value="${opt}" ${opt === selectedVal ? 'selected' : ''}>${opt}</option>`);
         $(select).val(selectedVal || currentVal).trigger('change.select2');
     };
+    const isValidPromoterName = (value) => {
+        if (value === null || value === undefined) return false;
+        const name = String(value).trim();
+        return !!name && name.toLowerCase() !== 'undefined' && name.toLowerCase() !== 'null' && name !== '-';
+    };
+
+    const normalizePromoterNames = (names = []) => [...new Set(
+        (Array.isArray(names) ? names : [names])
+            .map(v => String(v ?? '').trim())
+            .filter(isValidPromoterName)
+    )];
+
+    const getSelectedPromoters = () => normalizePromoterNames(
+        [1,2,3,4].map(num => document.getElementById(`promoter${num}`)?.value)
+    );
+
+    const setSelectedPromoters = (names = []) => {
+        const unique = normalizePromoterNames(names);
+        [1,2,3,4].forEach((num, index) => {
+            const input = document.getElementById(`promoter${num}`);
+            if (input) input.value = unique[index] || '';
+        });
+        const text = document.getElementById('selectedPromotersText');
+        const badges = document.getElementById('selectedPromotersBadges');
+        if (text) text.textContent = unique.length ? `تم اختيار ${unique.length} من الأشخاص` : 'اختر الأشخاص المتواجدين ضمن النقطة...';
+        if (badges) badges.innerHTML = unique.map(name => `<span class="badge text-bg-primary">${escapeHtml(name)}</span>`).join('');
+    };
+
     const populateEmployees = (report = {}) => {
         const inventoryStaff = DB.employees.filter(e => e.role === 'مسؤول جرد').map(e => e.name);
         const coordinators = DB.employees.filter(e => e.role === 'منسق نقطة').map(e => e.name);
-        const promoters = DB.employees.filter(e => e.role === 'مروج').map(e => e.name);
         populateSelect(document.getElementById('inventoryDependency'), inventoryStaff, report.inventoryDependency);
         populateSelect(document.getElementById('coordinator'), coordinators, report.coordinator);
-        [1, 2, 3, 4].forEach(num => populateSelect(document.getElementById(`promoter${num}`), promoters, (report.promoters || [])[num - 1]));
+        const reportPromoters = Array.isArray(report.promoters)
+            ? report.promoters
+            : [report.promoter1, report.promoter2, report.promoter3, report.promoter4];
+        setSelectedPromoters(normalizePromoterNames(reportPromoters));
     };
+
+    const promotersSelectionModal = new bootstrap.Modal(document.getElementById('promotersSelectionModal'));
+    const promotersSearchInput = document.getElementById('promotersSearchInput');
+    const promotersSelectionTbody = document.querySelector('#promotersSelectionTable tbody');
+    const promotersEmptyMessage = document.getElementById('promotersEmptyMessage');
+    const openPromotersBtn = document.getElementById('openPromotersBtn');
+    const savePromotersBtn = document.getElementById('savePromotersBtn');
+
+    const renderPromotersSelection = () => {
+        const promoters = (Array.isArray(DB.employees) ? DB.employees : [])
+            .filter(e => e && String(e.role || '').trim() === 'مروج')
+            .map(e => String(e.name ?? '').trim())
+            .filter(isValidPromoterName)
+            .filter((name, index, arr) => arr.indexOf(name) === index);
+        const selected = new Set(getSelectedPromoters());
+        promotersSelectionTbody.innerHTML = '';
+        const query = (promotersSearchInput?.value || '').toLowerCase().trim();
+        const visible = promoters.filter(name => name.toLowerCase().includes(query));
+        if (!visible.length) {
+            promotersEmptyMessage.classList.remove('d-none');
+            return;
+        }
+        promotersEmptyMessage.classList.add('d-none');
+        visible.forEach(name => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td><div class="form-check"><input class="form-check-input promoter-checkbox" type="checkbox" value="${escapeHtml(name)}" ${selected.has(name) ? 'checked' : ''}></div></td><td>${escapeHtml(name)}</td>`;
+            tr.addEventListener('click', e => {
+                if (e.target.tagName !== 'INPUT') {
+                    const cb = tr.querySelector('.promoter-checkbox');
+                    cb.checked = !cb.checked;
+                }
+            });
+            promotersSelectionTbody.appendChild(tr);
+        });
+    };
+
+    openPromotersBtn?.addEventListener('click', () => {
+        renderPromotersSelection();
+        promotersSelectionModal.show();
+    });
+    promotersSearchInput?.addEventListener('input', renderPromotersSelection);
+    savePromotersBtn?.addEventListener('click', () => {
+        const selected = Array.from(promotersSelectionTbody.querySelectorAll('.promoter-checkbox:checked')).map(cb => cb.value);
+        // إذا كانت القائمة مفلترة، نحافظ على الاختيارات الموجودة خارج نتيجة البحث.
+        const current = new Set(getSelectedPromoters());
+        const visibleNames = Array.from(promotersSelectionTbody.querySelectorAll('.promoter-checkbox')).map(cb => cb.value);
+        visibleNames.forEach(name => current.delete(name));
+        selected.forEach(name => current.add(name));
+        setSelectedPromoters(Array.from(current));
+        isFormDirty = true;
+        saveFormState();
+        promotersSelectionModal.hide();
+    });
+
     const updateSaleTotals = () => {
         let grandTotal = 0, totalQuantity = 0;
         salesTableBody.querySelectorAll('tr').forEach(row => {
@@ -381,7 +627,7 @@ async function handleReportPage() {
     const getCampaignProducts = () => {
         const campaignName = campaignSelect.value;
         let products = [];
-        if (campaignName === 'شاملة') {
+        if (campaignName === 'شاملة'||campaignName === 'مهرجان') {
             const allProducts = new Map();
             Object.values(DB.products || {}).flat().forEach(p => {
                 if (p && p.name) allProducts.set(p.name, p);
@@ -723,7 +969,7 @@ async function handleReportPage() {
 
     populateSelect(governorateSelect, [...new Set(DB.locations.map(l => l.gov))]);
     populateEmployees();
-    reportForm.querySelectorAll('select:not(#market_name)').forEach(select => initSelect2(select, $(select).find("option:first").text(), false));
+    reportForm.querySelectorAll('select:not(#market_name):not(.promoter-selector)').forEach(select => initSelect2(select, $(select).find("option:first").text(), false));
     
     $('#governorate').on('change', () => { const s = $('#governorate').val(); populateSelect(regionSelect, [...new Set(DB.locations.filter(l => l.gov === s).map(l => l.region))]); populateSelect(marketSelect, []); });
     $('#region').on('change', () => { const s = $('#region').val(); populateSelect(marketSelect, [...new Set(DB.locations.filter(l => l.region === s).map(l => l.market))]); });
