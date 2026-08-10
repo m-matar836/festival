@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbysIp8G9imzXzCXjxvehws3pKiQk8WNNzS1t_DQcrbhePNjfH8iwmP-TVNRs-COyr4m/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxX2Sr9A0PKHbmtdmQHCZ_s28u9UXZFPXNstKurQvy2nazxDdn4la0U95FQ0wLRhwOk/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -444,7 +444,7 @@ async function handleReportPage() {
         promoter3: $('#promoter3').val(), promoter4: $('#promoter4').val(),
         promoters: getSelectedPromoters(),
         notes: document.getElementById('notes').value,
-        sales: Array.from(salesTableBody.querySelectorAll('tr')).map(r => ({ product: $(r.querySelector('.sale-product')).val(), price: r.querySelector('.sale-price').value, quantity: r.querySelector('.sale-quantity').value })),
+        sales: Array.from(salesTableBody.querySelectorAll('tr')).map(r => ({ product: $(r.querySelector('.sale-product')).val(), price: Number(r.querySelector('.sale-price').value) || 0, quantity: Number(r.querySelector('.sale-quantity').value) || 0, campaign: $('#campaign').val() })),
         expenses: Array.from(expensesTableBody.querySelectorAll('tr')).map(r => ({ item: $(r.querySelector('.expense-item')).val(), quantity: r.querySelector('.expense-quantity').value })),
     });
     const saveFormState = () => { if (isFormDirty) { localStorage.setItem(FORM_STATE_KEY, JSON.stringify(getFormState())); } };
@@ -805,6 +805,14 @@ async function handleReportPage() {
 
         // إعادة تعيين حقول Select2
         $('#governorate, #campaign, #event, #inventoryDependency, #coordinator, #promoter1, #promoter2, #promoter3, #promoter4').val(null).trigger('change');
+        // تفريغ الأشخاص المتواجدين ضمن النقطة بالكامل
+        setSelectedPromoters([]);
+        const promotersSelectionTbodyReset = document.getElementById('promotersSelectionTbody');
+        if (promotersSelectionTbodyReset) {
+            promotersSelectionTbodyReset.querySelectorAll('.promoter-checkbox').forEach(cb => {
+                cb.checked = false;
+            });
+        }
         // تفريغ القوائم المعتمدة
         $('#region, #market_name').empty().append('<option value="" selected disabled>اختر...</option>').val(null).trigger('change');
 
@@ -889,8 +897,20 @@ async function handleReportPage() {
                 }
 
                 if (addAnother) {
+                    // resetFullForm() تم استدعاؤها مسبقاً، وتشمل تفريغ الأشخاص المتواجدين.
                     showToast('تم حفظ التقرير السابق بنجاح.');
                 } else {
+                    // بعد نجاح إرسال تقرير جديد فقط، نفرّغ الأشخاص المتواجدين ضمن النقطة.
+                    // لا نفرّغ نموذج التعديل حتى يبقى التقرير المعروض كما هو.
+                    if (!editId) {
+                        setSelectedPromoters([]);
+                        const promotersSelectionTbodyAfterSubmit = document.getElementById('promotersSelectionTbody');
+                        if (promotersSelectionTbodyAfterSubmit) {
+                            promotersSelectionTbodyAfterSubmit.querySelectorAll('.promoter-checkbox').forEach(cb => {
+                                cb.checked = false;
+                            });
+                    }
+                    }
                     document.querySelector('#successModal .fs-5').textContent = 'تم حفظ التقرير بنجاح!';
                     document.getElementById('success-spinner').style.display = 'none';
                     viewReportBtn.href = `history.html#c-${result.reportId}`;
