@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxX2Sr9A0PKHbmtdmQHCZ_s28u9UXZFPXNstKurQvy2nazxDdn4la0U95FQ0wLRhwOk/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwOVgwAois_WRzX6DOYufwrLm_2VUy5TOQvTTsM6EP5juBkbBM5J9WUdTPDqGNXf2k/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -69,6 +69,7 @@ async function syncPendingReports() {
     if (!navigator.onLine) return;
     let pending = [];
     try { pending = await getPendingReports(); } catch (e) { return; }
+    let syncedAny = false;
     for (const item of pending) {
         try {
             const res = await fetch(SCRIPT_URL, {
@@ -79,10 +80,14 @@ async function syncPendingReports() {
             const result = await res.json();
             if (result.status !== 'success') throw new Error(result.message || 'فشل المزامنة');
             await removePendingReport(item.localId);
+            syncedAny = true;
         } catch (error) {
             console.warn('Offline sync stopped:', error);
             break;
         }
+    }
+    if (syncedAny) {
+        try { await refreshAppCache({ silent: true }); } catch (e) { console.warn('Post-sync cache refresh skipped:', e); }
     }
     updateOfflineStatus();
 }
@@ -190,7 +195,7 @@ async function getDbData() {
 // ===================================================================
 //                 CACHE REFRESH / FAST DATA UPDATE
 // ===================================================================
-const APP_DB_VERSION = 'v10-offline';
+const APP_DB_VERSION = 'v11-offline-locations';
 const APP_DB_KEY = `appDB_${APP_DB_VERSION}`;
 const APP_DB_TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
 
@@ -319,6 +324,118 @@ function setupCacheRefreshButtons() {
     });
 }
 
+
+// ===================================================================
+//                 إضافة بيانات جديدة إلى Locations
+// ===================================================================
+async function addLocationToSheet(type, value, governorate = '', region = '') {
+    const cleanValue = String(value ?? '').trim();
+    if (!cleanValue) throw new Error('يرجى إدخال القيمة الجديدة.');
+    if (!navigator.onLine) throw new Error('إضافة بيانات جديدة تحتاج إلى اتصال بالإنترنت.');
+
+    const payload = {
+        action: 'addLocation',
+        payload: {
+            type,
+            value: cleanValue,
+            governorate: String(governorate ?? '').trim(),
+            region: String(region ?? '').trim()
+        }
+    };
+
+    const response = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload),
+        cache: 'no-store'
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json();
+    if (!result || result.status !== 'success') {
+        throw new Error(result?.message || 'تعذر إضافة البيانات إلى Locations');
+    }
+    return result;
+}
+
+function setupLocationAddButtons(DBRef) {
+    const modalEl = document.getElementById('addLocationModal');
+    const form = document.getElementById('addLocationForm');
+    if (!modalEl || !form) return;
+    const modal = new bootstrap.Modal(modalEl);
+    const typeInput = document.getElementById('addLocationType');
+    const valueInput = document.getElementById('addLocationValue');
+    const contextHint = document.getElementById('addLocationContext');
+    const saveBtn = document.getElementById('saveLocationBtn');
+    const governorateSelect = document.getElementById('governorate');
+    const regionSelect = document.getElementById('region');
+    const marketSelect = document.getElementById('market_name');
+
+    const labels = { governorate: 'المحافظة', region: 'المنطقة', market: 'اسم المحل' };
+
+    document.querySelectorAll('[data-add-location]').forEach(btn => {
+        if (btn.dataset.locationAddBound === '1') return;
+        btn.dataset.locationAddBound = '1';
+        btn.addEventListener('click', () => {
+            const type = btn.dataset.addLocation;
+            const gov = governorateSelect?.value || '';
+            const region = regionSelect?.value || '';
+            if (type === 'region' && !gov) {
+                alert('اختر المحافظة أولاً ثم أضف المنطقة.');
+                return;
+            }
+            if (type === 'market' && (!gov || !region)) {
+                alert('اختر المحافظة والمنطقة أولاً ثم أضف اسم المحل.');
+                return;
+            }
+            typeInput.value = type;
+            valueInput.value = '';
+            valueInput.placeholder = `أدخل ${labels[type] || 'البيانات'} الجديدة`;
+            contextHint.textContent = type === 'governorate'
+                ? 'ستتم إضافة محافظة جديدة.'
+                : type === 'region'
+                    ? `المحافظة: ${gov}`
+                    : `المحافظة: ${gov} — المنطقة: ${region}`;
+            modal.show();
+            setTimeout(() => valueInput.focus(), 200);
+        });
+    });
+
+    form.addEventListener('submit', async e => {
+        e.preventDefault();
+        const type = typeInput.value;
+        const value = valueInput.value.trim();
+        const gov = governorateSelect?.value || '';
+        const region = regionSelect?.value || '';
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i>جاري الحفظ...';
+        try {
+            await addLocationToSheet(type, value, gov, region);
+            modal.hide();
+            if (typeof window.showToast === 'function') {
+                window.showToast('تمت إضافة البيانات بنجاح. جاري تحديث القوائم...');
+            } else {
+                console.log('تمت إضافة البيانات بنجاح. جاري تحديث القوائم...');
+            }
+            const result = await refreshAppCache({ silent: true });
+            if (!result.ok) throw result.error || new Error('تمت الإضافة لكن تعذر تحديث القوائم');
+
+            // Select the newly-added value immediately after refresh.
+            if (type === 'governorate') {
+                $('#governorate').val(value).trigger('change');
+            } else if (type === 'region') {
+                $('#region').val(value).trigger('change');
+            } else if (type === 'market') {
+                $('#market_name').val(value).trigger('change');
+            }
+        } catch (error) {
+            alert(`تعذر إضافة البيانات: ${error.message || error}`);
+        } finally {
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = '<i class="fa-solid fa-save me-1"></i>حفظ';
+        }
+    });
+}
+
 // ===================================================================
 //                      3. منطق صفحة تسجيل الدخول
 // ===================================================================
@@ -398,9 +515,22 @@ async function handleReportPage() {
             const selectedCampaign = campaignSelect.value;
 
             if (typeof populateSelect === 'function') {
-                populateSelect(governorateSelect, DB.governorates || [], selectedGovernorate);
-                populateSelect(regionSelect, DB.regions || [], selectedRegion);
-                populateSelect(marketSelect, DB.markets || [], selectedMarket);
+                const locations = Array.isArray(DB.locations) ? DB.locations : [];
+                const governors = [...new Set(locations.map(l => String(l.gov ?? '').trim()).filter(Boolean))];
+                const regions = selectedGovernorate
+                    ? [...new Set(locations.filter(l => String(l.gov ?? '').trim() === String(selectedGovernorate).trim())
+                        .map(l => String(l.region ?? '').trim()).filter(Boolean))]
+                    : [];
+                const markets = selectedGovernorate && selectedRegion
+                    ? [...new Set(locations.filter(l =>
+                        String(l.gov ?? '').trim() === String(selectedGovernorate).trim() &&
+                        String(l.region ?? '').trim() === String(selectedRegion).trim())
+                        .map(l => String(l.market ?? '').trim()).filter(Boolean))]
+                    : [];
+
+                populateSelect(governorateSelect, governors, selectedGovernorate);
+                populateSelect(regionSelect, regions, selectedRegion);
+                populateSelect(marketSelect, markets, selectedMarket);
             }
 
             // Re-run dependent product filtering without touching existing rows.
@@ -412,6 +542,7 @@ async function handleReportPage() {
 
     document.getElementById('loading-spinner').remove();
     form.style.display = 'block';
+    setupLocationAddButtons(DB);
 
     const reportForm = document.getElementById('reportForm'), governorateSelect = document.getElementById('governorate'), regionSelect = document.getElementById('region'), marketSelect = document.getElementById('market_name'), campaignSelect = document.getElementById('campaign'), salesTableBody = document.getElementById('sales-table-body'), expensesTableBody = document.getElementById('expenses-table-body'), addSaleRowBtn = document.getElementById('add-sale-row'), addExpenseRowBtn = document.getElementById('add-expense-row'), mainSubmitBtn = document.querySelector('.main-submit-btn'), supervisorInput = document.getElementById('supervisor'), submitAndAddAnotherBtn = document.getElementById('submitAndAddAnotherBtn');
     const productModal = new bootstrap.Modal(document.getElementById('productSelectionModal'));
@@ -433,6 +564,7 @@ async function handleReportPage() {
         toastContainer.classList.add('show');
         setTimeout(() => toastContainer.classList.remove('show'), 3000);
     };
+    window.showToast = showToast;
 
     const getFormState = () => ({
         governorate: $('#governorate').val(), region: $('#region').val(), market: $('#market_name').val(),
@@ -867,6 +999,8 @@ async function handleReportPage() {
                 });
                 const result = await res.json();
                 if (result.status !== 'success') throw new Error(result.message || 'فشل الحفظ');
+                // Rebuild the local cache after every successful report so the next report sees fresh data.
+                try { await refreshAppCache({ silent: true }); } catch (cacheError) { console.warn('Post-report cache refresh skipped:', cacheError); }
                 return result;
             } catch (error) {
                 // في حالة انقطاع الشبكة أثناء الإرسال، خزّن التقرير للمزامنة.

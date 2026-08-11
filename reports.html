@@ -63,9 +63,9 @@
                 <div id="collapseReportInfo" class="collapse show">
                     <div class="card-body">
                         <div class="row g-3">
-                            <div class="col-md-4"><label class="form-label">المحافظة</label><select id="governorate" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
-                            <div class="col-md-4"><label class="form-label">المنطقة</label><select id="region" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
-                            <div class="col-md-4"><label class="form-label">اسم المحل</label><select id="market_name" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
+                            <div class="col-md-4"><label class="form-label">المحافظة</label><div class="input-group"><select id="governorate" class="form-select" required><option value="" selected disabled>اختر...</option></select><button type="button" class="btn btn-outline-success" data-add-location="governorate" title="إضافة محافظة"><i class="fa-solid fa-plus"></i></button></div></div>
+                            <div class="col-md-4"><label class="form-label">المنطقة</label><div class="input-group"><select id="region" class="form-select" required><option value="" selected disabled>اختر...</option></select><button type="button" class="btn btn-outline-success" data-add-location="region" title="إضافة منطقة"><i class="fa-solid fa-plus"></i></button></div></div>
+                            <div class="col-md-4"><label class="form-label">اسم المحل</label><div class="input-group"><select id="market_name" class="form-select" required><option value="" selected disabled>اختر...</option></select><button type="button" class="btn btn-outline-success" data-add-location="market" title="إضافة اسم محل"><i class="fa-solid fa-plus"></i></button></div></div>
                             <div class="col-md-4"><label class="form-label">نوع الحملة</label><select id="campaign" class="form-select" required><option value="" selected disabled>اختر...</option><option value="بن الحموي">بن الحموي</option><option value="سيتي كافيه">سيتي كافيه</option><option value="مرة سائلة">مرة سائلة</option><option value="شاملة">شاملة</option><option value="مهرجان">مهرجان</option></select></div>
                             <div class="col-md-4"><label class="form-label">نوع الحدث</label><select id="event" class="form-select" required><option value="" selected disabled>اختر...</option><option value="ترويج مباشر">ترويج مباشر</option><option value="ترويج وبيع غير مباشر">ترويج وبيع غير مباشر</option><option value="ترويج وبيع مباشر">ترويج وبيع مباشر</option><option value="ترويج مولات">ترويج مولات</option></select></div>
                             <div class="col-md-4"><label class="form-label">عدد أيام الحدث</label><input type="number" id="eventDays" class="form-control" min="1" value="1" required/></div>
@@ -82,9 +82,9 @@
     <input type="hidden" id="promoter2" value="">
     <input type="hidden" id="promoter3" value="">
     <input type="hidden" id="promoter4" value="">
-    <button type="button" class="btn btn-outline-primary w-100 text-start" id="openPromotersBtn">
-        <i class="fa-solid fa-users me-1"></i>
-        <span id="selectedPromotersText">اختر الأشخاص المتواجدين ضمن النقطة...</span>
+     <button type="button" class="btn btn-outline-primary w-100 text-start" id="openPromotersBtn">
+        <center><i class="fa-solid fa-users me-1"></i>
+       <span id="selectedPromotersText">اختر الأشخاص المتواجدين ضمن النقطة...</span></center>
     </button>
     <div id="selectedPromotersBadges" class="mt-2 d-flex flex-wrap gap-1"></div>
 </div>
@@ -301,5 +301,30 @@
             window.addEventListener('load', () => navigator.serviceWorker.register('./service-worker.js').catch(console.warn));
         }
     </script>
+
+    <!-- إضافة بيانات جديدة إلى Locations -->
+    <div class="modal fade" id="addLocationModal" tabindex="-1" aria-labelledby="addLocationModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addLocationModalLabel">إضافة بيانات جديدة</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <form id="addLocationForm">
+                    <div class="modal-body">
+                        <input type="hidden" id="addLocationType">
+                        <div id="addLocationContext" class="alert alert-info py-2"></div>
+                        <label for="addLocationValue" class="form-label">القيمة الجديدة</label>
+                        <input type="text" id="addLocationValue" class="form-control" required autocomplete="off">
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                        <button type="submit" class="btn btn-success" id="saveLocationBtn"><i class="fa-solid fa-save me-1"></i>حفظ</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>
