@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwOVgwAois_WRzX6DOYufwrLm_2VUy5TOQvTTsM6EP5juBkbBM5J9WUdTPDqGNXf2k/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwt5-RBPvWDKhW-9HCfmVh2YKHrPjrEx7-bGb3-HTeZAtbALY4WeuKb9LbrjQgtdnoL/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -570,6 +570,7 @@ async function handleReportPage() {
         governorate: $('#governorate').val(), region: $('#region').val(), market: $('#market_name').val(),
         campaign: $('#campaign').val(), event: $('#event').val(),
         eventDays: document.getElementById('eventDays').value, date: document.getElementById('date').value,
+        phoneNumber: document.getElementById('phoneNumber')?.value.trim() || '',
         timeFrom: document.getElementById('timeFrom').value, timeTo: document.getElementById('timeTo').value,
         inventoryDependency: $('#inventoryDependency').val(), coordinator: $('#coordinator').val(),
         promoter1: $('#promoter1').val(), promoter2: $('#promoter2').val(),
@@ -591,6 +592,7 @@ async function handleReportPage() {
         document.getElementById('timeFrom').value = state.timeFrom;
         document.getElementById('timeTo').value = state.timeTo;
         document.getElementById('notes').value = state.notes;
+        if (document.getElementById('phoneNumber')) document.getElementById('phoneNumber').value = state.phoneNumber || '';
         $('#inventoryDependency').val(state.inventoryDependency).trigger('change');
         $('#coordinator').val(state.coordinator).trigger('change');
         $('#promoter1').val(state.promoter1).trigger('change');
@@ -783,14 +785,35 @@ async function handleReportPage() {
         const code = normalizeBarcode(barcode);
         if (!code) return null;
 
-        const products = getSaleProducts();
-        return products.find(p => normalizeBarcode(p.barcode) === code) || null;
+        const products = getSaleProducts().filter(
+            p => normalizeBarcode(p.barcode) === code
+        );
+        if (!products.length) return null;
+
+        // إذا كان الباركود موجوداً بأكثر من سجل، استخدم السعر المعتمد
+        // في بيانات Products. وبعد تعديل السعر يتم تحديث جميع سجلات
+        // المادة/الباركود في الشيت ثم إعادة بناء الكاش.
+        return products[products.length - 1];
     };
 
-    const findSaleRowByProduct = (productName) => {
-        return Array.from(salesTableBody.querySelectorAll('tr')).find(row => {
-            return $(row.querySelector('.sale-product')).val() === productName;
-        }) || null;
+    const findSaleRowByProduct = (productName, approvedPrice) => {
+        const rows = Array.from(salesTableBody.querySelectorAll('tr')).filter(row =>
+            $(row.querySelector('.sale-product')).val() === productName
+        );
+        if (!rows.length) return null;
+
+        // عند وجود المادة مرتين في المبيعات بسعرين مختلفين:
+        // الباركود يجب أن يزيد كمية السطر الذي يحمل السعر المعتمد،
+        // وليس أول سطر عشوائياً.
+        const masterPrice = Number(approvedPrice);
+        if (Number.isFinite(masterPrice)) {
+            const matching = rows.find(row => {
+                const rowPrice = Number(row.querySelector('.sale-price')?.value);
+                return Number.isFinite(rowPrice) && Math.abs(rowPrice - masterPrice) < 0.000001;
+            });
+            if (matching) return matching;
+        }
+        return rows[0];
     };
 
     const focusBarcodeInput = () => {
@@ -802,6 +825,17 @@ async function handleReportPage() {
         const barcode = normalizeBarcode(rawBarcode);
         const status = document.getElementById('barcodeStatus');
         if (!barcode) return false;
+
+        // بعض أجهزة USB ترسل نفس المسح مرتين: input ثم Enter.
+        // امنع التكرار الآلي فقط، مع السماح بمسح نفس المادة مرة أخرى بعد مهلة قصيرة.
+        const now = Date.now();
+        if (barcode === lastSalesBarcode && (now - lastSalesBarcodeAt) < 800) {
+            const input = document.getElementById('barcodeInput');
+            if (input) input.value = '';
+            return false;
+        }
+        lastSalesBarcode = barcode;
+        lastSalesBarcodeAt = now;
 
         if (!campaignSelect.value) {
             status.textContent = 'يرجى اختيار نوع الحملة أولاً.';
@@ -820,7 +854,7 @@ async function handleReportPage() {
             return false;
         }
 
-        const existingRow = findSaleRowByProduct(product.name);
+        const existingRow = findSaleRowByProduct(product.name, product.price);
         if (existingRow) {
             const quantityInput = existingRow.querySelector('.sale-quantity');
             const currentQty = parseInt(quantityInput.value, 10) || 0;
@@ -845,6 +879,43 @@ async function handleReportPage() {
         if (input) input.value = '';
         focusBarcodeInput();
         return true;
+    };
+
+    let priceUpdateTimer = null;
+    const updateMasterProductPrice = async (row) => {
+        if (!navigator.onLine) return;
+        const product = String($(row.querySelector('.sale-product')).val() || '').trim();
+        const price = Number(row.querySelector('.sale-price')?.value);
+        const campaign = String(campaignSelect.value || '').trim();
+        if (!product || !campaign || !Number.isFinite(price) || price < 0) return;
+        try {
+            const res = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({
+                    action: 'updateProductPrice',
+                    payload: {
+                        product,
+                        price,
+                        campaign,
+                        barcode: normalizeBarcode(row.querySelector('.sale-product option:checked')?.dataset?.barcode || '')
+                    }
+                }),
+                cache: 'no-store'
+            });
+            const result = await res.json();
+            if (result.status !== 'success') throw new Error(result.message || 'تعذر تحديث السعر');
+            // بعد تحديث Products، اسحب البيانات الجديدة فوراً وأعد بناء الكاش المحلي.
+            await refreshAppCache({ silent: true });
+        } catch (error) {
+            console.error('Immediate price update failed:', error);
+            showToast(`تعذر تحديث سعر «${product}» على الشيت: ${error.message || error}`, true);
+        }
+    };
+
+    const scheduleMasterProductPriceUpdate = (row) => {
+        clearTimeout(priceUpdateTimer);
+        priceUpdateTimer = setTimeout(() => updateMasterProductPrice(row), 120);
     };
 
     const createSaleRow = (sale = {}) => {
@@ -894,6 +965,14 @@ async function handleReportPage() {
             updateSaleTotals();
             isFormDirty = true;
             saveFormState();
+            // تحديث السعر المعتمد تلقائياً بعد توقف المستخدم عن الكتابة.
+            scheduleMasterProductPriceUpdate(row);
+        });
+        row.querySelector('.sale-price').addEventListener('change', () => {
+            updateSaleTotals();
+            isFormDirty = true;
+            saveFormState();
+            scheduleMasterProductPriceUpdate(row);
         });
 
         salesTableBody.appendChild(row);
@@ -934,6 +1013,7 @@ async function handleReportPage() {
         document.getElementById('timeFrom').value = '';
         document.getElementById('timeTo').value = '';
         document.getElementById('notes').value = '';
+        if (document.getElementById('phoneNumber')) document.getElementById('phoneNumber').value = '';
 
         // إعادة تعيين حقول Select2
         $('#governorate, #campaign, #event, #inventoryDependency, #coordinator, #promoter1, #promoter2, #promoter3, #promoter4').val(null).trigger('change');
@@ -1104,10 +1184,28 @@ async function handleReportPage() {
         $('#campaign').val(report.campaign).trigger('change');
         $('#event').val(report.event).trigger('change');
         document.getElementById('eventDays').value = report.eventDays;
-        document.getElementById('date').value = report.date;
-        document.getElementById('timeFrom').value = report.timeFrom;
-        document.getElementById('timeTo').value = report.timeTo;
+        // القيم القادمة من Reports تكون بصيغة حقول HTML مباشرة.
+        // يوجد fallback بسيط إذا أعاد Google Sheets قيمة Date/ISO.
+        const toDateInputValue = (value) => {
+            if (!value) return '';
+            const text = String(value).trim();
+            if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+            const d = new Date(text);
+            return Number.isNaN(d.getTime()) ? text : d.toISOString().slice(0, 10);
+        };
+        const toTimeInputValue = (value) => {
+            if (!value) return '';
+            const text = String(value).trim();
+            const match = text.match(/^(\d{1,2}):(\d{2})/);
+            if (match) return `${String(Number(match[1])).padStart(2, '0')}:${match[2]}`;
+            const d = new Date(text);
+            return Number.isNaN(d.getTime()) ? text : d.toTimeString().slice(0, 5);
+        };
+        document.getElementById('date').value = toDateInputValue(report.date);
+        document.getElementById('timeFrom').value = toTimeInputValue(report.timeFrom);
+        document.getElementById('timeTo').value = toTimeInputValue(report.timeTo);
         document.getElementById('notes').value = report.notes;
+        if (document.getElementById('phoneNumber')) document.getElementById('phoneNumber').value = report.phoneNumber || '';
         supervisorInput.value = report.supervisor || '';
         populateEmployees(report);
         originalCreatedAt = report.createdAt;
@@ -1130,7 +1228,20 @@ async function handleReportPage() {
     $('#inventoryDependency').on('change', function() { const s = $(this).val(); let n = ''; if (s) { const m = DB.employees.find(e => e.name === s); if (m && m.mgr) n = m.mgr; } supervisorInput.value = n; });
     $('#campaign').on('change', function() { salesTableBody.innerHTML = ''; expensesTableBody.innerHTML = ''; updateSaleTotals(); const bi = document.getElementById('barcodeInput'); if (bi) bi.value = ''; const bs = document.getElementById('barcodeStatus'); if (bs) bs.textContent = ''; focusBarcodeInput(); });
     
+    const updatePhoneNumberRequirement = () => {
+        const eventValue = String($('#event').val() || '').trim();
+        const phoneInput = document.getElementById('phoneNumber');
+        const hint = document.getElementById('phoneNumberHint');
+        if (!phoneInput) return;
+        const required = eventValue === 'ترويج وبيع غير مباشر';
+        phoneInput.required = required;
+        phoneInput.setAttribute('aria-required', required ? 'true' : 'false');
+        if (hint) hint.textContent = required ? 'رقم هاتف صاحب المحل مطلوب لهذا النوع من الحدث.' : 'رقم الهاتف اختياري لهذا النوع من الحدث.';
+        if (!required) phoneInput.setCustomValidity('');
+    };
+
     $('#event').on('change', function() {
+        updatePhoneNumberRequirement();
         const isDirectPromotion = $(this).val() === 'ترويج مباشر';
         const marketSelectElement = $('#market_name');
         const currentValue = marketSelectElement.val();
@@ -1142,6 +1253,7 @@ async function handleReportPage() {
         initSelect2(marketSelectElement, 'اختر أو أدخل اسم المحل...', isDirectPromotion);
         marketSelectElement.val(currentValue).trigger('change');
     }).trigger('change');
+    updatePhoneNumberRequirement();
 
     const urlParams = new URLSearchParams(window.location.search);
     const editId = urlParams.get('edit');
@@ -1249,6 +1361,8 @@ async function handleReportPage() {
     const barcodeCameraModal = new bootstrap.Modal(barcodeCameraModalElement);
     let html5QrCode = null;
     let barcodeDebounceTimer = null;
+    let lastSalesBarcode = '';
+    let lastSalesBarcodeAt = 0;
     let cameraScanLocked = false;
     let cameraTarget = 'sales';
 

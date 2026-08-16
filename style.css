@@ -329,3 +329,26 @@ body {
 .toast-message.error {
     background-color: rgba(231, 76, 60, 0.9); /* --error-color */
 }
+
+/* Location fields: the add button is always beside the select, never below it. */
+.location-control {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: stretch;
+    gap: 6px;
+    width: 100%;
+}
+.location-control .form-select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.location-add-btn {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    height: auto;
+    padding: 0.375rem 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}

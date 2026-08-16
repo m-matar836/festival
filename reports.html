@@ -63,9 +63,27 @@
                 <div id="collapseReportInfo" class="collapse show">
                     <div class="card-body">
                         <div class="row g-3">
-                            <div class="col-md-4"><label class="form-label">المحافظة</label><div class="input-group"><select id="governorate" class="form-select" required><option value="" selected disabled>اختر...</option></select><button type="button" class="btn btn-outline-success" data-add-location="governorate" title="إضافة محافظة"><i class="fa-solid fa-plus"></i></button></div></div>
-                            <div class="col-md-4"><label class="form-label">المنطقة</label><div class="input-group"><select id="region" class="form-select" required><option value="" selected disabled>اختر...</option></select><button type="button" class="btn btn-outline-success" data-add-location="region" title="إضافة منطقة"><i class="fa-solid fa-plus"></i></button></div></div>
-                            <div class="col-md-4"><label class="form-label">اسم المحل</label><div class="input-group"><select id="market_name" class="form-select" required><option value="" selected disabled>اختر...</option></select><button type="button" class="btn btn-outline-success" data-add-location="market" title="إضافة اسم محل"><i class="fa-solid fa-plus"></i></button></div></div>
+                            <div class="col-md-4 location-field">
+                                <label class="form-label">المحافظة</label>
+                                <div class="location-control">
+                                    <select id="governorate" class="form-select" required><option value="" selected disabled>اختر...</option></select>
+                                    <button type="button" class="btn btn-outline-success location-add-btn" data-add-location="governorate" title="إضافة محافظة" aria-label="إضافة محافظة"><i class="fa-solid fa-plus"></i></button>
+                                </div>
+                            </div>
+                            <div class="col-md-4 location-field">
+                                <label class="form-label">المنطقة</label>
+                                <div class="location-control">
+                                    <select id="region" class="form-select" required><option value="" selected disabled>اختر...</option></select>
+                                    <button type="button" class="btn btn-outline-success location-add-btn" data-add-location="region" title="إضافة منطقة" aria-label="إضافة منطقة"><i class="fa-solid fa-plus"></i></button>
+                                </div>
+                            </div>
+                            <div class="col-md-4 location-field">
+                                <label class="form-label">اسم المحل</label>
+                                <div class="location-control">
+                                    <select id="market_name" class="form-select" required><option value="" selected disabled>اختر...</option></select>
+                                    <button type="button" class="btn btn-outline-success location-add-btn" data-add-location="market" title="إضافة اسم محل" aria-label="إضافة اسم محل"><i class="fa-solid fa-plus"></i></button>
+                                </div>
+                            </div>
                             <div class="col-md-4"><label class="form-label">نوع الحملة</label><select id="campaign" class="form-select" required><option value="" selected disabled>اختر...</option><option value="بن الحموي">بن الحموي</option><option value="سيتي كافيه">سيتي كافيه</option><option value="مرة سائلة">مرة سائلة</option><option value="شاملة">شاملة</option><option value="مهرجان">مهرجان</option></select></div>
                             <div class="col-md-4"><label class="form-label">نوع الحدث</label><select id="event" class="form-select" required><option value="" selected disabled>اختر...</option><option value="ترويج مباشر">ترويج مباشر</option><option value="ترويج وبيع غير مباشر">ترويج وبيع غير مباشر</option><option value="ترويج وبيع مباشر">ترويج وبيع مباشر</option><option value="ترويج مولات">ترويج مولات</option></select></div>
                             <div class="col-md-4"><label class="form-label">عدد أيام الحدث</label><input type="number" id="eventDays" class="form-control" min="1" value="1" required/></div>
@@ -76,7 +94,7 @@
                             <div class="col-md-4"><label class="form-label">المشرف</label><input type="text" id="supervisor" class="form-control" readonly></div>
                             <div class="col-md-4"><label class="form-label">تبعية الجرد</label><select id="inventoryDependency" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
                             <div class="col-md-4"><label class="form-label">منسق النقطة</label><select id="coordinator" class="form-select" required><option value="" selected disabled>اختر...</option></select></div>
-                            <div class="col-md-12">
+                            <div class="col-md-8">
     <label class="form-label">الأشخاص المتواجدين ضمن النقطة</label>
     <input type="hidden" id="promoter1" value="">
     <input type="hidden" id="promoter2" value="">
@@ -87,6 +105,11 @@
        <span id="selectedPromotersText">اختر الأشخاص المتواجدين ضمن النقطة...</span></center>
     </button>
     <div id="selectedPromotersBadges" class="mt-2 d-flex flex-wrap gap-1"></div>
+</div>
+<div class="col-md-4">
+    <label class="form-label" for="phoneNumber">رقم هاتف صاحب المحل</label>
+    <input type="tel" id="phoneNumber" class="form-control" inputmode="tel" autocomplete="tel" placeholder="09XXXXXX65" style="text-align: right;">
+    <div class="form-text" id="phoneNumberHint">مطلوب فقط عند اختيار ترويج وبيع غير مباشر.</div>
 </div>
                     </div>
                 </div>
