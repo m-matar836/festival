@@ -127,8 +127,8 @@
                         <div class="row g-2 align-items-end">
                             <div class="col-md-8">
                                 <label for="barcodeInput" class="form-label fw-bold"><i class="fa-solid fa-barcode me-1"></i>مسح / إدخال الباركود</label>
-                                <input type="text" id="barcodeInput" class="form-control form-control-lg" inputmode="numeric" autocomplete="off" placeholder="امسح الباركود بواسطة USB أو اكتبه هنا...">
                                 <div class="form-text">USB Scanner يعمل مباشرة مثل لوحة المفاتيح. بعد المسح اضغط Enter إذا لم يرسله الجهاز تلقائياً.</div>
+                                <input type="text" id="barcodeInput" class="form-control form-control-lg" inputmode="numeric" autocomplete="off" placeholder="امسح الباركود بواسطة USB أو اكتبه هنا...">
                             </div>
                             <div class="col-md-4 d-flex gap-2">
                                 <button type="button" id="scanBarcodeCameraBtn" class="btn btn-primary btn-lg flex-fill">
@@ -152,6 +152,38 @@
                 </div>
             </div>
 
+            <!-- Competitor Sales Card: same UI/behavior as Sales, visible only for ترويج مولات -->
+            <div class="card form-card" id="competitorSalesCard" style="display:none;">
+                <div class="card-header collapsible-header" data-bs-toggle="collapse" data-bs-target="#collapseCompetitorSalesTable">
+                    <span><i class="fa-solid fa-store me-2"></i>مبيعات المنافس</span>
+                    <i class="fa-solid fa-chevron-up collapse-icon"></i>
+                </div>
+                <div id="collapseCompetitorSalesTable" class="collapse show">
+                    <div class="card-body border-bottom bg-light">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-8">
+                                <label for="competitorBarcodeInput" class="form-label fw-bold"><i class="fa-solid fa-barcode me-1"></i>مسح / إدخال الباركود</label>
+                                <div class="form-text">USB Scanner يعمل مباشرة مثل لوحة المفاتيح. بعد المسح اضغط Enter إذا لم يرسله الجهاز تلقائياً.</div>
+                                <input type="text" id="competitorBarcodeInput" class="form-control form-control-lg" inputmode="numeric" autocomplete="off" placeholder="امسح باركود مادة المنافس بواسطة USB أو اكتبه هنا...">
+                            </div>
+                            <div class="col-md-4 d-flex gap-2">
+                                <button type="button" id="scanCompetitorBarcodeCameraBtn" class="btn btn-primary btn-lg flex-fill"><i class="fa-solid fa-camera me-1"></i> مسح بالكاميرا</button>
+                                <button type="button" id="clearCompetitorBarcodeBtn" class="btn btn-outline-secondary btn-lg" title="مسح الحقل"><i class="fa-solid fa-xmark"></i></button>
+                            </div>
+                        </div>
+                        <div id="competitorBarcodeStatus" class="small mt-2" aria-live="polite"></div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-bordered table-hover mb-0">
+                            <thead class="table-light"><tr><th>المادة</th><th style="width: 130px;">السعر</th><th style="width: 130px;">الكمية</th><th style="width: 150px;">المجموع</th><th style="width: 90px;">إجراء</th></tr></thead>
+                            <tbody id="competitor-sales-table-body"></tbody>
+                            <tfoot class="table-light fw-bold"><tr><td class="text-end" colspan="2">الإجمالي:</td><td id="competitorTotalQuantity">0</td><td id="competitorGrandTotal">0.00</td><td></td></tr></tfoot>
+                        </table>
+                    </div>
+                    <div class="card-footer bg-light text-center"><button type="button" id="add-competitor-sale-row" class="btn btn-sm btn-outline-primary"><i class="fa-solid fa-plus"></i> إضافة مواد للبيع</button></div>
+                </div>
+            </div>
+
             <!-- Expenses Card -->
             <div class="card form-card">
                 <div class="card-header collapsible-header" data-bs-toggle="collapse" data-bs-target="#collapseExpensesTable">
@@ -164,8 +196,8 @@
                         <div class="row g-2 align-items-end">
                             <div class="col-md-8">
                                 <label for="expenseBarcodeInput" class="form-label fw-bold"><i class="fa-solid fa-barcode me-1"></i>مسح / إدخال باركود مادة التذوق</label>
+                                <div class="form-text">سيتم البحث فقط ضمن المواد المصنفة «مادة تذوق»  .</div>
                                 <input type="text" id="expenseBarcodeInput" class="form-control form-control-lg" inputmode="numeric" autocomplete="off" placeholder="امسح الباركود بواسطة USB أو اكتبه هنا...">
-                                <div class="form-text">سيتم البحث فقط ضمن المواد المصنفة «مادة تذوق» وغير الملغاة.</div>
                             </div>
                             <div class="col-md-4 d-flex gap-2">
                                 <button type="button" id="scanExpenseBarcodeCameraBtn" class="btn btn-primary btn-lg flex-fill">
@@ -243,6 +275,26 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
                     <button type="button" class="btn btn-primary" id="addSelectedProductsBtn">إضافة المواد المحددة</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL FOR COMPETITOR PRODUCTS -->
+    <div class="modal fade" id="competitorProductSelectionModal" tabindex="-1" aria-labelledby="competitorProductSelectionModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="competitorProductSelectionModalLabel">اختيار مواد المنافس</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3"><input type="text" id="competitorProductSearchInput" class="form-control" placeholder="ابحث عن مادة المنافس..."></div>
+                    <div class="table-responsive"><table class="table table-hover" id="competitorProductSelectionTable"><thead><tr><th style="width:50px;">اختيار</th><th>اسم المادة</th></tr></thead><tbody></tbody></table></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
+                    <button type="button" class="btn btn-primary" id="addSelectedCompetitorProductsBtn">إضافة المواد المحددة</button>
                 </div>
             </div>
         </div>

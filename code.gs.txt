@@ -1,0 +1,677 @@
+// ===============================================================
+// Code.gs - updated to sync edited sales prices back to Products
+// ===============================================================
+
+const aSheet = SpreadsheetApp.getActiveSpreadsheet();
+const reportsSheet = aSheet.getSheetByName("Reports");
+const salesSheet = aSheet.getSheetByName("sales");
+const salesOfCompetitorSheet = aSheet.getSheetByName("salesOfCompetitor");
+const expensesSheet = aSheet.getSheetByName("expenses");
+const promotersSheet = aSheet.getSheetByName("promoters");
+const usersSheet = aSheet.getSheetByName("Users");
+const cache = CacheService.getScriptCache();
+const CACHE_EXPIRATION_SECONDS = 3600;
+const INITIAL_DATA_CACHE_VERSION = 'v16-competitor-sales-exact';
+
+function doGet(e) {
+  try {
+    const action = e.parameter.action;
+    let response;
+    switch (action) {
+      case "getInitialData": response = getInitialData(e.parameter.forceRefresh === "1"); break;
+      case "getReports": response = getReports(); break;
+      case "getReportById": response = getReportById(e.parameter.id); break;
+      case "findProductByBarcode": response = findProductByBarcode(e.parameter.barcode, e.parameter.campaign); break;
+      default: response = {status:"error", message:"Invalid GET Action"};
+    }
+    return createJsonResponse(response);
+  } catch (err) {
+    return createJsonResponse({status:"error", message:err.message});
+  }
+}
+
+function doPost(e) {
+  try {
+    const request = JSON.parse(e.postData.contents || '{}');
+    const action = request.action;
+    let response;
+
+    switch (action) {
+      case "doLogin":
+        response = doLogin(request.payload);
+        break;
+
+      case "submitReport":
+        response = handleReportSubmission(request.payload);
+        break;
+
+      case "addLocation":
+        response = addLocation(request.payload);
+        break;
+
+      case "updateProductPrice":
+        response = updateProductPrice(request.payload);
+        break;
+
+      case "refreshCache":
+        response = refreshCache();
+        break;
+
+      default:
+        response = {
+          status: "error",
+          message: "Invalid POST Action: " + action
+        };
+    }
+
+    return createJsonResponse(response);
+
+  } catch (err) {
+    return createJsonResponse({
+      status: "error",
+      message: err.message
+    });
+  }
+}
+
+function createJsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doLogin(payload) {
+  const usersData = usersSheet.getRange(2,1,usersSheet.getLastRow()-1,5).getValues();
+  const inputUsernameLower = String(payload.username || '').toLowerCase();
+  const foundUser = usersData.find(row => String(row[1]).toLowerCase() === inputUsernameLower && String(row[2]) === String(payload.password));
+  if (!foundUser) throw new Error("Invalid credentials");
+  return {status:"success", user:{id:foundUser[0], username:foundUser[1], role:foundUser[3], name:foundUser[4]}};
+}
+
+function normalizeHeaderName(value) {
+  return String(value ?? '').trim().replace(/\s+/g,' ').toLowerCase();
+}
+
+function getColumnIndex(headers, names, fallback) {
+  const normalized = headers.map(normalizeHeaderName);
+  for (const name of names) {
+    const idx = normalized.indexOf(normalizeHeaderName(name));
+    if (idx !== -1) return idx;
+  }
+  return fallback;
+}
+
+function isCancelledValue(value) {
+  if (value === true) return true;
+  const text = String(value ?? '').trim().toLowerCase();
+  return ['true','1','yes','نعم'].includes(text);
+}
+
+function getInitialData(forceRefresh) {
+  const cacheKey = "initialData_" + INITIAL_DATA_CACHE_VERSION;
+  if (!forceRefresh) {
+    const cachedData = cache.get(cacheKey);
+    if (cachedData) return JSON.parse(cachedData);
+  } else {
+    cache.remove(cacheKey);
+  }
+
+  const sheets = aSheet.getSheets();
+  const sheetData = {};
+  sheets.forEach(sheet => {
+    const sheetName = sheet.getName();
+    if (["Locations","Products","ProductsOfCompetitor","Employees","ExpenseItems"].includes(sheetName)) {
+      if (sheet.getLastRow() > 0) sheetData[sheetName] = sheet.getDataRange().getValues();
+    }
+  });
+
+  const locations = (sheetData.Locations || [[]]).slice(1).map(row => ({gov:row[0], region:row[1], market:row[2]}));
+  const employees = (sheetData.Employees || [[]]).slice(1).map(row => ({name:row[0], role:row[1], mgr:row[2] || ''}));
+
+  const products = {};
+  const productRows = sheetData.Products || [];
+  if (productRows.length > 1) {
+    const headers = productRows[0];
+    const campaignCol = getColumnIndex(headers,['campaign','الحملة'],0);
+    const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],1);
+    const priceCol = getColumnIndex(headers,['price','السعر'],2);
+    const companyCol = getColumnIndex(headers,['الشركة','company'],3);
+    const barcodeCol = getColumnIndex(headers,['barcode','باركود','الباركود'],4);
+    const categoryCol = getColumnIndex(headers,['تصنيف المادة','category','التصنيف'],5);
+    const cancelledCol = getColumnIndex(headers,['إلغاء المادة','cancelled','canceled','الغاء المادة'],6);
+    productRows.slice(1).forEach(row => {
+      const campaign = String(row[campaignCol] ?? '').trim();
+      const product = String(row[productCol] ?? '').trim();
+      if (!campaign || !product || isCancelledValue(row[cancelledCol])) return;
+      if (!products[campaign]) products[campaign] = [];
+      products[campaign].push({name:product, price:Number(row[priceCol]) || 0, company:String(row[companyCol] ?? '').trim(), barcode:String(row[barcodeCol] ?? '').trim(), category:String(row[categoryCol] ?? '').trim(), cancelled:false});
+    });
+  }
+
+  const competitorProducts = [];
+  const competitorRows = sheetData.ProductsOfCompetitor || [];
+  if (competitorRows.length > 1) {
+    const headers = competitorRows[0].map(h => String(h ?? '').trim());
+    const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],0);
+    const barcodeCol = getColumnIndex(headers,['barcode','باركود','الباركود'],1);
+    const cancelledCol = getColumnIndex(headers,['إلغاء المادة','cancelled','canceled','الغاء المادة'],2);
+    competitorRows.slice(1).forEach(row => {
+      const name = String(row[productCol] ?? '').trim();
+      if (!name || isCancelledValue(row[cancelledCol])) return;
+      competitorProducts.push({name, barcode:String(row[barcodeCol] ?? '').trim(), cancelled:false});
+    });
+  }
+
+  const expenseItems = {};
+  (sheetData.ExpenseItems || [[]]).slice(1).forEach(([campaign,item]) => {
+    if (!expenseItems[campaign]) expenseItems[campaign] = [];
+    expenseItems[campaign].push(item);
+  });
+
+  const initialData = {locations, products, competitorProducts, employees, expenseItems};
+  try { cache.put(cacheKey, JSON.stringify(initialData), CACHE_EXPIRATION_SECONDS); } catch (e) { /* local/browser cache remains available */ }
+  return initialData;
+}
+
+function findProductByBarcode(barcode, campaign) {
+  const code = String(barcode || '').trim();
+  if (!code) return {status:"error", message:"Barcode is required"};
+  const sheet = aSheet.getSheetByName("Products");
+  if (!sheet || sheet.getLastRow() < 2) return {status:"error", message:"Products sheet is empty"};
+  const data = sheet.getDataRange().getValues();
+  const headers = data.shift();
+  const campaignCol = getColumnIndex(headers,['campaign','الحملة'],0);
+  const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],1);
+  const priceCol = getColumnIndex(headers,['price','السعر'],2);
+  const companyCol = getColumnIndex(headers,['الشركة','company'],3);
+  const barcodeCol = getColumnIndex(headers,['barcode','باركود','الباركود'],4);
+  const categoryCol = getColumnIndex(headers,['تصنيف المادة','category','التصنيف'],5);
+  const cancelledCol = getColumnIndex(headers,['إلغاء المادة','cancelled','canceled','الغاء المادة'],6);
+  const row = data.find(r => {
+    const rowCampaign = String(r[campaignCol] ?? '').trim();
+    const campaignMatches = !campaign || campaign === 'شاملة' || rowCampaign === String(campaign).trim();
+    return campaignMatches && String(r[barcodeCol] ?? '').trim() === code && String(r[productCol] ?? '').trim() && String(r[categoryCol] ?? '').trim() === 'مادة بيعية' && !isCancelledValue(r[cancelledCol]);
+  });
+  if (!row) return {status:"error", message:"Product not found"};
+  return {status:"success", product:{campaign:row[campaignCol], name:row[productCol], price:Number(row[priceCol])||0, company:row[companyCol]||'', barcode:String(row[barcodeCol]??'').trim(), category:row[categoryCol]||'', cancelled:row[cancelledCol]||''}};
+}
+
+function clearReportDetails(reportId) {
+  const sheetsToProcess = [
+    {sheet:salesSheet, columns:4},
+    {sheet:salesOfCompetitorSheet, columns:4},
+    {sheet:expensesSheet, columns:3},
+    {sheet:promotersSheet, columns:3}
+  ];
+  sheetsToProcess.forEach(obj => {
+    if (!obj.sheet || obj.sheet.getLastRow() < 2) return;
+    const data = obj.sheet.getRange(1,1,obj.sheet.getLastRow(),obj.columns).getValues();
+    const headers = data.shift();
+    const dataToKeep = data.filter(row => String(row[0]) !== String(reportId));
+    obj.sheet.clearContents();
+    obj.sheet.getRange(1,1,1,headers.length).setValues([headers]);
+    if (dataToKeep.length) obj.sheet.getRange(2,1,dataToKeep.length,dataToKeep[0].length).setValues(dataToKeep);
+  });
+}
+
+function addReportDetails(reportData) {
+  const reportId = String(reportData.id);
+  if (reportData.sales && reportData.sales.length) {
+    const salesRows = reportData.sales.map(s => [reportId,s.product,Number(s.price)||0,Number(s.quantity)||0]);
+    salesSheet.getRange(salesSheet.getLastRow()+1,1,salesRows.length,4).setValues(salesRows);
+  }
+  if (reportData.salesOfCompetitor && reportData.salesOfCompetitor.length && salesOfCompetitorSheet) {
+    const rows = reportData.salesOfCompetitor.map(s => [reportId,s.product,Number(s.price)||0,Number(s.quantity)||0]);
+    salesOfCompetitorSheet.getRange(salesOfCompetitorSheet.getLastRow()+1,1,rows.length,4).setValues(rows);
+  }
+  if (reportData.expenses && reportData.expenses.length) {
+    const expenseRows = reportData.expenses.map(e => [reportId,e.item,Number(e.quantity)||0]);
+    expensesSheet.getRange(expensesSheet.getLastRow()+1,1,expenseRows.length,3).setValues(expenseRows);
+  }
+  if (reportData.promoters && reportData.promoters.length) {
+    const promoterRows = reportData.promoters.filter(p => p && String(p).trim()).map(p => [reportId,p,reportData.date]);
+    if (promoterRows.length) promotersSheet.getRange(promotersSheet.getLastRow()+1,1,promoterRows.length,3).setValues(promoterRows);
+  }
+}
+
+// Updates the master price in Products for the products whose price was edited in the report.
+function updateProductPrices(reportData) {
+  const sheet = aSheet.getSheetByName('Products');
+  if (!sheet || sheet.getLastRow() < 2 || !reportData || !Array.isArray(reportData.sales)) return;
+
+  const range = sheet.getDataRange();
+  const values = range.getValues();
+  const headers = values[0];
+  const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],1);
+  const priceCol = getColumnIndex(headers,['price','السعر'],2);
+  const campaignCol = getColumnIndex(headers,['campaign','الحملة'],0);
+
+  const eventType = String(reportData.event || '').trim();
+  if (eventType !== 'ترويج وبيع مباشر') return;
+
+  const reportCampaign = String(reportData.campaign ?? '').trim();
+  const requested = new Map();
+  reportData.sales.forEach(s => {
+    const name = String(s.product ?? '').trim();
+    if (!name) return;
+    const price = Number(s.price);
+    if (!Number.isFinite(price)) return;
+    const campaign = String(s.campaign ?? reportCampaign).trim();
+    requested.set(`${campaign}|||${name}`, price);
+  });
+
+  if (!requested.size) return;
+  let changed = false;
+  for (let r = 1; r < values.length; r++) {
+    const name = String(values[r][productCol] ?? '').trim();
+    const rowCampaign = String(values[r][campaignCol] ?? '').trim();
+    if (!name) continue;
+
+    let key = `${rowCampaign}|||${name}`;
+    let newPrice = requested.get(key);
+    if (newPrice === undefined && reportCampaign === 'شاملة') {
+      // With a "شاملة" report, update only an unambiguous product name.
+      const matches = [...requested.entries()].filter(([k]) => k.endsWith(`|||${name}`));
+      if (matches.length === 1) newPrice = matches[0][1];
+    }
+    if (newPrice === undefined) continue;
+
+    if (Number(values[r][priceCol]) !== newPrice) {
+      values[r][priceCol] = newPrice;
+      changed = true;
+    }
+  }
+  if (changed) range.setValues(values);
+}
+
+function ensureReportsColumn(columnName) {
+  const headers = reportsSheet.getRange(1,1,1,reportsSheet.getLastColumn()).getValues()[0];
+  const idx = headers.findIndex(h => normalizeHeaderName(h) === normalizeHeaderName(columnName));
+  if (idx !== -1) return idx + 1;
+  const newCol = reportsSheet.getLastColumn() + 1;
+  reportsSheet.getRange(1,newCol).setValue(columnName);
+  return newCol;
+}
+
+function updateProductPrice(payload) {
+  payload = payload || {};
+  const productName = String(payload.product || '').trim();
+  const campaign = String(payload.campaign || '').trim();
+  const price = Number(payload.price);
+  const barcode = String(payload.barcode || '').trim();
+  if (!productName) throw new Error('اسم المادة مطلوب');
+  if (!campaign) throw new Error('نوع الحملة مطلوب');
+  if (!Number.isFinite(price) || price < 0) throw new Error('السعر غير صالح');
+
+  const sheet = aSheet.getSheetByName('Products');
+  if (!sheet || sheet.getLastRow() < 2) throw new Error('Products sheet is empty');
+  const range = sheet.getDataRange();
+  const values = range.getValues();
+  const headers = values[0];
+  const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],1);
+  const priceCol = getColumnIndex(headers,['price','السعر'],2);
+  const campaignCol = getColumnIndex(headers,['campaign','الحملة'],0);
+
+  const barcodeCol = getColumnIndex(headers,['barcode','باركود','الباركود'],4);
+
+  let matches = 0;
+  for (let r=1; r<values.length; r++) {
+    const rowName = String(values[r][productCol] ?? '').trim();
+    const rowCampaign = String(values[r][campaignCol] ?? '').trim();
+    const rowBarcode = String(values[r][barcodeCol] ?? '').trim();
+
+    const campaignMatches = campaign === 'شاملة'
+      ? (rowName === productName)
+      : (rowCampaign === campaign && rowName === productName);
+
+    if (!campaignMatches) continue;
+
+    // عند توفر الباركود، استخدمه لتحديد نفس المادة بشكل أدق.
+    // نحدّث كل السجلات المطابقة حتى لا يبقى سعر قديم لنفس الباركود
+    // ويعود للواجهة عند المسح التالي.
+    if (barcode && rowBarcode && rowBarcode !== barcode) continue;
+
+    values[r][priceCol] = price;
+    matches++;
+  }
+  if (!matches) throw new Error('المادة غير موجودة ضمن الحملة المحددة');
+  range.setValues(values);
+  cache.remove('initialData_' + INITIAL_DATA_CACHE_VERSION);
+  cache.remove('allReports');
+  cache.remove('allReports_v2');
+  return {status:'success', updated:matches, price:price};
+}
+
+function refreshCache() {
+  cache.remove('initialData_' + INITIAL_DATA_CACHE_VERSION);
+  cache.remove('allReports');
+  cache.remove('allReports_v2');
+  getInitialData(true);
+  return {status:'success', message:'تم تحديث الكاش بنجاح'};
+}
+
+function handleReportSubmission(reportData) {
+  const eventType = String(reportData.event || '').trim();
+  const phoneNumber = String(reportData.phoneNumber || '').trim();
+  if (eventType === 'ترويج وبيع غير مباشر' && !phoneNumber) {
+    throw new Error('رقم هاتف صاحب المحل مطلوب لهذا النوع من الحدث');
+  }
+  ensureReportsColumn('phoneNumber');
+  const headers = reportsSheet.getRange(1,1,1,reportsSheet.getLastColumn()).getValues()[0];
+  const reportId = String(reportData.id);
+  const reportIds = reportsSheet.getRange('A2:A').getValues().flat().map(String);
+  const existingRowIndex = reportIds.indexOf(reportId);
+  const newRow = headers.map(header => reportData[header] === undefined ? '' : (Array.isArray(reportData[header]) ? JSON.stringify(reportData[header]) : reportData[header]));
+
+  if (existingRowIndex !== -1) {
+    reportsSheet.getRange(existingRowIndex+2,1,1,newRow.length).setValues([newRow]);
+    clearReportDetails(reportId);
+  } else {
+    reportsSheet.appendRow(newRow);
+  }
+
+  addReportDetails(reportData);
+  updateProductPrices(reportData);
+  cache.removeAll(['allReports','allReports_v2','initialData_' + INITIAL_DATA_CACHE_VERSION]);
+  return {status:'success', reportId:reportId};
+}
+
+// تحويل قيم التاريخ والوقت القادمة من Google Sheets إلى صيغة مناسبة
+// مباشرة لحقول HTML من نوع date / time.
+// مهم عند التعديل: نقرأ القيمة الفعلية من Reports ثم نعيدها كـ yyyy-MM-dd و HH:mm.
+function normalizeReportDateTimeFields(reportObj) {
+  if (!reportObj) return reportObj;
+
+  const timezone = aSheet.getSpreadsheetTimeZone() || Session.getScriptTimeZone() || 'GMT';
+
+  const formatDateValue = (value) => {
+    if (value === null || value === undefined || value === '') return '';
+    if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+      return Utilities.formatDate(value, timezone, 'yyyy-MM-dd');
+    }
+    const text = String(value).trim();
+    if (!text) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+    // إذا كانت القيمة النصية ISO/تاريخاً قابلاً للتحويل، نعيدها بصيغة حقل date.
+    const parsed = new Date(text);
+    if (!isNaN(parsed.getTime())) {
+      return Utilities.formatDate(parsed, timezone, 'yyyy-MM-dd');
+    }
+    return text;
+  };
+
+  const formatTimeValue = (value) => {
+    if (value === null || value === undefined || value === '') return '';
+    if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime())) {
+      return Utilities.formatDate(value, timezone, 'HH:mm');
+    }
+
+    const text = String(value).trim();
+    if (!text) return '';
+
+    // قيم الوقت المعتادة: 09:30 أو 09:30:00
+    let match = text.match(/^(\d{1,2}):(\d{2})(?::\d{2})?/);
+    if (match) {
+      return `${String(Number(match[1])).padStart(2,'0')}:${match[2]}`;
+    }
+
+    // قد تكون القيمة ISO أو نصاً ناتجاً عن Date.
+    const parsed = new Date(text);
+    if (!isNaN(parsed.getTime())) {
+      return Utilities.formatDate(parsed, timezone, 'HH:mm');
+    }
+    return text;
+  };
+
+  reportObj.date = formatDateValue(reportObj.date);
+  reportObj.timeFrom = formatTimeValue(reportObj.timeFrom);
+  reportObj.timeTo = formatTimeValue(reportObj.timeTo);
+
+  return reportObj;
+}
+
+function getReports() {
+  // v2 حتى لا نستخدم بيانات allReports القديمة المخزنة قبل إصلاح التاريخ والوقت.
+  const cacheKey = 'allReports_v2';
+  const cachedData = cache.get(cacheKey);
+  if (cachedData) return JSON.parse(cachedData);
+  if (reportsSheet.getLastRow() < 2) return [];
+  const reportsData = reportsSheet.getDataRange().getValues();
+  const salesData = salesSheet.getLastRow()>1 ? salesSheet.getDataRange().getValues() : [];
+  const competitorSalesData = salesOfCompetitorSheet && salesOfCompetitorSheet.getLastRow()>1 ? salesOfCompetitorSheet.getDataRange().getValues() : [];
+  const expensesData = expensesSheet.getLastRow()>1 ? expensesSheet.getDataRange().getValues() : [];
+  const promotersData = promotersSheet.getLastRow()>1 ? promotersSheet.getDataRange().getValues() : [];
+  const reportHeaders = reportsData.shift();
+  const reportsMap = new Map();
+  reportsData.forEach(row => {
+    if (!row[0]) return;
+    const reportObj = {};
+    reportHeaders.forEach((header,index) => {
+      if (header === 'participants' || header === 'promoters') {
+        try { reportObj[header] = JSON.parse(row[index] || '[]'); } catch(e) { reportObj[header]=[]; }
+      } else reportObj[header]=row[index];
+    });
+    reportObj.sales=[]; reportObj.salesOfCompetitor=[]; reportObj.expenses=[];
+    normalizeReportDateTimeFields(reportObj);
+    reportsMap.set(String(reportObj.id),reportObj);
+  });
+  if (salesData.length) {
+    salesData.shift();
+    salesData.forEach(([id,product,price,quantity]) => { const report=reportsMap.get(String(id)); if(report) report.sales.push({product,price,quantity}); });
+  }
+  if (competitorSalesData.length) {
+    competitorSalesData.shift();
+    competitorSalesData.forEach(([id,product,price,quantity]) => { const report=reportsMap.get(String(id)); if(report) report.salesOfCompetitor.push({product,price,quantity}); });
+  }
+  if (expensesData.length) {
+    expensesData.shift();
+    expensesData.forEach(([id,item,quantity]) => { const report=reportsMap.get(String(id)); if(report) report.expenses.push({item,quantity}); });
+  }
+  if (promotersData.length) {
+    promotersData.shift();
+    promotersData.forEach(([id,name]) => { const report=reportsMap.get(String(id)); if(report){ if(!Array.isArray(report.promoters)) report.promoters=[]; if(name) report.promoters.push(name); } });
+  }
+  const finalReports=Array.from(reportsMap.values());
+  try { cache.put(cacheKey,JSON.stringify(finalReports),CACHE_EXPIRATION_SECONDS); } catch(e) {}
+  return finalReports;
+}
+
+function getReportById(id) {
+  const report = getReports().find(r => String(r.id) === String(id));
+  return report ? {status:'success',report:report} : {status:'error',message:'Report not found'};
+}
+
+function addLocation(payload) {
+  const sheet = aSheet.getSheetByName("Locations");
+
+  if (!sheet) {
+    throw new Error("Sheet 'Locations' غير موجودة");
+  }
+
+  payload = payload || {};
+
+  // نوع الإضافة
+  const type = String(
+    payload.type ||
+    payload.locationType ||
+    payload.kind ||
+    ""
+  ).trim().toLowerCase();
+
+  // نقبل أكثر من اسم حتى تتوافق مع script.js الحالي
+  let gov = String(
+    payload.gov ??
+    payload.governorate ??
+    payload.governor ??
+    payload.province ??
+    ""
+  ).trim();
+
+  let region = String(
+    payload.region ??
+    payload.area ??
+    ""
+  ).trim();
+
+  let market = String(
+    payload.market ??
+    payload.marketName ??
+    payload.shop ??
+    payload.name ??
+    ""
+  ).trim();
+
+  // إذا كانت الإضافة محافظة، فالقيمة قد تكون مرسلة كـ name أو value
+  if (
+    (type === "governorate" || type === "gov" || type === "province") &&
+    !gov
+  ) {
+    gov = String(
+      payload.name ??
+      payload.value ??
+      payload.text ??
+      ""
+    ).trim();
+  }
+
+  if (!type) {
+    throw new Error("نوع البيانات المطلوب إضافتها غير محدد");
+  }
+
+  let newGov = gov;
+  let newRegion = region;
+  let newMarket = market;
+
+  // =========================================================
+  // إضافة محافظة
+  // =========================================================
+  if (
+    type === "governorate" ||
+    type === "gov" ||
+    type === "province"
+  ) {
+    if (!newGov) {
+      throw new Error("اسم المحافظة مطلوب");
+    }
+
+    newRegion = "";
+    newMarket = "";
+  }
+
+  // =========================================================
+  // إضافة منطقة
+  // =========================================================
+  else if (
+    type === "region" ||
+    type === "area"
+  ) {
+    if (!newGov) {
+      throw new Error("يجب اختيار المحافظة أولاً");
+    }
+
+    if (!newRegion) {
+      newRegion = String(
+        payload.name ??
+        payload.value ??
+        payload.text ??
+        ""
+      ).trim();
+    }
+
+    if (!newRegion) {
+      throw new Error("اسم المنطقة مطلوب");
+    }
+
+    newMarket = "";
+  }
+
+  // =========================================================
+  // إضافة محل
+  // =========================================================
+  else if (
+    type === "market" ||
+    type === "shop"
+  ) {
+    if (!newGov) {
+      throw new Error("يجب اختيار المحافظة أولاً");
+    }
+
+    if (!newRegion) {
+      throw new Error("يجب اختيار المنطقة أولاً");
+    }
+
+if (!newMarket) {
+  newMarket = String(
+    payload.name ??
+    payload.value ??
+    payload.text ??
+    ""
+  ).trim();
+}
+
+if (!newMarket) {
+  throw new Error("اسم المحل مطلوب");
+}
+  }
+
+  else {
+    throw new Error("نوع الموقع غير صحيح: " + type);
+  }
+
+  // =========================================================
+  // منع التكرار
+  // =========================================================
+
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow >= 2) {
+
+    const data = sheet
+      .getRange(2, 1, lastRow - 1, 3)
+      .getValues();
+
+    const duplicate = data.some(row => {
+
+      const rowGov = String(row[0] ?? "").trim();
+      const rowRegion = String(row[1] ?? "").trim();
+      const rowMarket = String(row[2] ?? "").trim();
+
+      return (
+        rowGov === newGov &&
+        rowRegion === newRegion &&
+        rowMarket === newMarket
+      );
+    });
+
+    if (duplicate) {
+      throw new Error("هذه البيانات موجودة مسبقاً");
+    }
+  }
+
+  // =========================================================
+  // إضافة إلى Locations
+  // =========================================================
+
+  sheet.appendRow([
+    newGov,
+    newRegion,
+    newMarket
+  ]);
+
+  // =========================================================
+  // تحديث الكاش
+  // =========================================================
+
+  try {
+    cache.remove("initialData_" + INITIAL_DATA_CACHE_VERSION);
+  } catch (e) {}
+
+  return {
+    status: "success",
+    message: "تمت إضافة البيانات بنجاح",
+    location: {
+      gov: newGov,
+      region: newRegion,
+      market: newMarket
+    }
+  };
+}

@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwt5-RBPvWDKhW-9HCfmVh2YKHrPjrEx7-bGb3-HTeZAtbALY4WeuKb9LbrjQgtdnoL/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyyqMUty5ydSa6DZr93qcLxo4zTmBRAzmuJ_85zgcFoKawMXvF9FQJFZD_iX2IaywjT/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -195,7 +195,7 @@ async function getDbData() {
 // ===================================================================
 //                 CACHE REFRESH / FAST DATA UPDATE
 // ===================================================================
-const APP_DB_VERSION = 'v11-offline-locations';
+const APP_DB_VERSION = 'v16-competitor-sales-exact';
 const APP_DB_KEY = `appDB_${APP_DB_VERSION}`;
 const APP_DB_TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
 
@@ -545,6 +545,7 @@ async function handleReportPage() {
     setupLocationAddButtons(DB);
 
     const reportForm = document.getElementById('reportForm'), governorateSelect = document.getElementById('governorate'), regionSelect = document.getElementById('region'), marketSelect = document.getElementById('market_name'), campaignSelect = document.getElementById('campaign'), salesTableBody = document.getElementById('sales-table-body'), expensesTableBody = document.getElementById('expenses-table-body'), addSaleRowBtn = document.getElementById('add-sale-row'), addExpenseRowBtn = document.getElementById('add-expense-row'), mainSubmitBtn = document.querySelector('.main-submit-btn'), supervisorInput = document.getElementById('supervisor'), submitAndAddAnotherBtn = document.getElementById('submitAndAddAnotherBtn');
+    const competitorSalesCard = document.getElementById('competitorSalesCard'), competitorSalesTableBody = document.getElementById('competitor-sales-table-body'), addCompetitorSaleRowBtn = document.getElementById('add-competitor-sale-row'), competitorProductModal = new bootstrap.Modal(document.getElementById('competitorProductSelectionModal')), competitorProductSearchInput = document.getElementById('competitorProductSearchInput'), competitorProductSelectionTbody = document.querySelector('#competitorProductSelectionTable tbody'), addSelectedCompetitorProductsBtn = document.getElementById('addSelectedCompetitorProductsBtn');
     const productModal = new bootstrap.Modal(document.getElementById('productSelectionModal'));
     const productSearchInput = document.getElementById('productSearchInput');
     const productSelectionTbody = document.querySelector('#productSelectionTable tbody');
@@ -578,6 +579,7 @@ async function handleReportPage() {
         promoters: getSelectedPromoters(),
         notes: document.getElementById('notes').value,
         sales: Array.from(salesTableBody.querySelectorAll('tr')).map(r => ({ product: $(r.querySelector('.sale-product')).val(), price: Number(r.querySelector('.sale-price').value) || 0, quantity: Number(r.querySelector('.sale-quantity').value) || 0, campaign: $('#campaign').val() })),
+        salesOfCompetitor: Array.from(document.querySelectorAll('#competitor-sales-table-body tr')).map(r => ({ product: $(r.querySelector('.competitor-product')).val(), price: Number(r.querySelector('.competitor-price').value) || 0, quantity: Number(r.querySelector('.competitor-quantity').value) || 0 })),
         expenses: Array.from(expensesTableBody.querySelectorAll('tr')).map(r => ({ item: $(r.querySelector('.expense-item')).val(), quantity: r.querySelector('.expense-quantity').value })),
     });
     const saveFormState = () => { if (isFormDirty) { localStorage.setItem(FORM_STATE_KEY, JSON.stringify(getFormState())); } };
@@ -610,6 +612,7 @@ async function handleReportPage() {
         }
         salesTableBody.innerHTML = '';
         if (state.sales) state.sales.forEach(createSaleRow);
+        if (state.salesOfCompetitor && typeof createCompetitorSaleRow === 'function') state.salesOfCompetitor.forEach(createCompetitorSaleRow);
         expensesTableBody.innerHTML = '';
         if (state.expenses) state.expenses.forEach(createExpenseRow);
         updateSaleTotals();
@@ -777,6 +780,9 @@ async function handleReportPage() {
         .trim()
         .replace(/\s+/g, ' ');
     const getSaleProducts = () => getCampaignProducts().filter(p => normalizeCategory(p.category) === 'مادة بيعية');
+    const isDirectSaleEvent = () => String($('#event').val() || '').trim() === 'ترويج وبيع مباشر';
+    const getSaleDisplayPrice = (product) => isDirectSaleEvent() ? Number(product?.price || 0) : 0;
+    const getCompetitorProducts = () => Array.isArray(DB.competitorProducts) ? DB.competitorProducts.filter(p => p && p.name && !isCancelledProduct(p)) : [];
     const getTastingProducts = () => getCampaignProducts().filter(p => normalizeCategory(p.category) === 'مادة تذوق');
 
     const normalizeBarcode = (value) => String(value ?? '').trim();
@@ -793,7 +799,8 @@ async function handleReportPage() {
         // إذا كان الباركود موجوداً بأكثر من سجل، استخدم السعر المعتمد
         // في بيانات Products. وبعد تعديل السعر يتم تحديث جميع سجلات
         // المادة/الباركود في الشيت ثم إعادة بناء الكاش.
-        return products[products.length - 1];
+        const product = products[products.length - 1];
+        return {...product, price: getSaleDisplayPrice(product)};
     };
 
     const findSaleRowByProduct = (productName, approvedPrice) => {
@@ -887,7 +894,7 @@ async function handleReportPage() {
         const product = String($(row.querySelector('.sale-product')).val() || '').trim();
         const price = Number(row.querySelector('.sale-price')?.value);
         const campaign = String(campaignSelect.value || '').trim();
-        if (!product || !campaign || !Number.isFinite(price) || price < 0) return;
+        if (!product || !campaign || !Number.isFinite(price) || price < 0 || !isDirectSaleEvent()) return;
         try {
             const res = await fetch(SCRIPT_URL, {
                 method: 'POST',
@@ -930,12 +937,12 @@ async function handleReportPage() {
         const row = document.createElement('tr');
         const productOptions = products.map(p => {
             const safeName = String(p.name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-            return `<option value="${safeName}" data-price="${Number(p.price || 0)}" data-barcode="${normalizeBarcode(p.barcode)}">${safeName}</option>`;
+            return `<option value="${safeName}" data-price="${getSaleDisplayPrice(p)}" data-barcode="${normalizeBarcode(p.barcode)}">${safeName}</option>`;
         }).join('');
-        const priceValue = sale.price !== undefined && sale.price !== '' ? Number(sale.price || 0).toFixed(2) : '0.00';
+        const priceValue = isDirectSaleEvent() ? (sale.price !== undefined && sale.price !== '' ? Number(sale.price || 0).toFixed(2) : '0.00') : '0.00';
         const quantityValue = sale.quantity !== undefined && sale.quantity !== '' ? sale.quantity : '';
 
-        row.innerHTML = `<td><select class="form-select form-select-sm sale-product" required><option value="" selected disabled>اختر...</option>${productOptions}</select></td><td><input type="number" class="form-control form-control-sm sale-price" value="${priceValue}" step="0.01" required></td><td><input type="number" class="form-control form-control-sm sale-quantity" value="${quantityValue}" min="1" required></td><td><input type="text" class="form-control form-control-sm row-total" value="0.00" readonly></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
+        row.innerHTML = `<td><select class="form-select form-select-sm sale-product" required><option value="" selected disabled>اختر...</option>${productOptions}</select></td><td><input type="number" class="form-control form-control-sm sale-price" value="${priceValue}" step="1" required></td><td><input type="number" class="form-control form-control-sm sale-quantity" value="${quantityValue}" min="1" required></td><td><input type="text" class="form-control form-control-sm row-total" value="0.00" readonly></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
         row.querySelector('.remove-row-btn').addEventListener('click', () => {
             row.remove();
             updateSaleTotals();
@@ -1142,7 +1149,72 @@ async function handleReportPage() {
                 }
             });
     };
-    
+    const updateCompetitorSalesVisibility = () => {
+        const visible = String($('#event').val() || '').trim() === 'ترويج مولات';
+        if (competitorSalesCard) competitorSalesCard.style.display = visible ? '' : 'none';
+        if (!visible && competitorSalesTableBody) competitorSalesTableBody.innerHTML = '';
+    };
+
+    const updateCompetitorSaleTotals = () => {
+        if (!competitorSalesTableBody) return;
+        competitorSalesTableBody.querySelectorAll('tr').forEach(row => {
+            const price = Number(row.querySelector('.competitor-price')?.value) || 0;
+            const qty = Number(row.querySelector('.competitor-quantity')?.value) || 0;
+            const total = row.querySelector('.competitor-row-total');
+            if (total) total.value = (price * qty).toFixed(2);
+        });
+        const rows = Array.from(competitorSalesTableBody.querySelectorAll('tr'));
+        const totalQty = rows.reduce((sum,row)=>sum+(Number(row.querySelector('.competitor-quantity')?.value)||0),0);
+        const grand = rows.reduce((sum,row)=>sum+(Number(row.querySelector('.competitor-price')?.value)||0)*(Number(row.querySelector('.competitor-quantity')?.value)||0),0);
+        const tq=document.getElementById('competitorTotalQuantity'); if(tq) tq.textContent=totalQty;
+        const gt=document.getElementById('competitorGrandTotal'); if(gt) gt.textContent=grand.toFixed(2);
+    };
+
+    const createCompetitorSaleRow = (sale = {}) => {
+        const products = getCompetitorProducts();
+        if (sale.product && !products.some(p => p.name === sale.product)) return;
+        const row = document.createElement('tr');
+        const productOptions = products.map(p => {
+            const safeName = escapeHtml(String(p.name ?? ''));
+            return `<option value="${safeName}" data-barcode="${escapeHtml(normalizeBarcode(p.barcode))}">${safeName}</option>`;
+        }).join('');
+        const price = sale.price !== undefined && sale.price !== '' ? Number(sale.price || 0).toFixed(2) : '0.00';
+        const qty = sale.quantity !== undefined && sale.quantity !== '' ? sale.quantity : '';
+        row.innerHTML = `<td><select class="form-select form-select-sm competitor-product" required><option value="" selected disabled>اختر...</option>${productOptions}</select></td><td><input type="number" class="form-control form-control-sm competitor-price" value="${price}" step="1" min="0" required></td><td><input type="number" class="form-control form-control-sm competitor-quantity" value="${qty}" min="1" required></td><td><input type="text" class="form-control form-control-sm competitor-row-total" value="0.00" readonly></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-competitor-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
+        row.querySelector('.remove-competitor-row-btn').addEventListener('click', () => { row.remove(); updateCompetitorSaleTotals(); isFormDirty=true; saveFormState(); });
+        row.querySelector('.competitor-price').addEventListener('input', () => { updateCompetitorSaleTotals(); isFormDirty=true; saveFormState(); });
+        row.querySelector('.competitor-quantity').addEventListener('input', () => { updateCompetitorSaleTotals(); isFormDirty=true; saveFormState(); });
+        row.querySelector('.competitor-product').addEventListener('change', () => { isFormDirty=true; saveFormState(); });
+        competitorSalesTableBody.appendChild(row);
+        if (sale.product) $(row.querySelector('.competitor-product')).val(sale.product).trigger('change');
+        updateCompetitorSaleTotals();
+    };
+
+    const populateCompetitorProductModal = () => {
+        const products = getCompetitorProducts();
+        competitorProductSelectionTbody.innerHTML = '';
+        products.forEach(p => competitorProductSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input competitor-product-select-check" type="checkbox" value="${escapeHtml(p.name)}" style="pointer-events:none;"></div></td><td>${escapeHtml(p.name)}</td></tr>`));
+        competitorProductSearchInput.value = '';
+        competitorProductSearchInput.dispatchEvent(new Event('input'));
+    };
+
+    const addCompetitorProductByBarcode = (rawBarcode) => {
+        const code = normalizeBarcode(rawBarcode);
+        if (!code) return false;
+        const product = getCompetitorProducts().find(p => normalizeBarcode(p.barcode) === code);
+        const status = document.getElementById('competitorBarcodeStatus');
+        if (!product) { if (status) { status.textContent=`الباركود ${code} غير موجود ضمن مواد المنافس.`; status.className='small mt-2 text-danger'; } showToast(`باركود المنافس ${code} غير موجود.`,true); return false; }
+        const existing = Array.from(competitorSalesTableBody.querySelectorAll('tr')).find(r => $(r.querySelector('.competitor-product')).val()===product.name);
+        if (existing) {
+            const q=existing.querySelector('.competitor-quantity'); q.value=(parseInt(q.value,10)||0)+1;
+        } else createCompetitorSaleRow({product:product.name,price:0,quantity:1});
+        updateCompetitorSaleTotals();
+        if(status){status.textContent=`تمت إضافة «${product.name}».`;status.className='small mt-2 text-success';}
+        isFormDirty=true; saveFormState();
+        const input=document.getElementById('competitorBarcodeInput'); if(input){input.value='';input.focus();}
+        return true;
+    };
+
     function setupModalRowClick(tbody) {
         tbody.addEventListener('click', (e) => {
             const row = e.target.closest('tr');
@@ -1157,7 +1229,7 @@ async function handleReportPage() {
     function populateProductSelectionModal(campaignName) {
         const products = getSaleProducts();
         productSelectionTbody.innerHTML = '';
-        products.forEach(product => { productSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input product-select-check" type="checkbox" value="${product.name}" data-price="${product.price}" style="pointer-events: none;"></div></td><td>${product.name}</td></tr>`); });
+        products.forEach(product => { productSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input product-select-check" type="checkbox" value="${product.name}" data-price="${getSaleDisplayPrice(product)}" style="pointer-events: none;"></div></td><td>${product.name}</td></tr>`); });
         productSearchInput.value = ''; productSearchInput.dispatchEvent(new Event('input'));
     }
     addSaleRowBtn.addEventListener('click', () => { const c = campaignSelect.value; if (!c) { alert('يرجى اختيار نوع الحملة أولاً.'); return; } populateProductSelectionModal(c); productModal.show(); });
@@ -1176,6 +1248,10 @@ async function handleReportPage() {
 
     setupModalRowClick(productSelectionTbody);
     setupModalRowClick(expenseSelectionTbody);
+    setupModalRowClick(competitorProductSelectionTbody);
+    addCompetitorSaleRowBtn?.addEventListener('click', () => { const c=campaignSelect.value; if(!c){alert('يرجى اختيار نوع الحملة أولاً.');return;} populateCompetitorProductModal(); competitorProductModal.show(); });
+    competitorProductSearchInput?.addEventListener('input', () => { const q=competitorProductSearchInput.value.toLowerCase().trim(); competitorProductSelectionTbody.querySelectorAll('tr').forEach(r => r.style.display=r.cells[1].textContent.toLowerCase().includes(q)?'':'none'); });
+    addSelectedCompetitorProductsBtn?.addEventListener('click', () => { competitorProductSelectionTbody.querySelectorAll('.competitor-product-select-check:checked').forEach(c => createCompetitorSaleRow({product:c.value,price:0})); competitorProductModal.hide(); isFormDirty=true; saveFormState(); });
     
     const initEditMode = (report) => {
         populateSelect(governorateSelect, [...new Set(DB.locations.map(l => l.gov))], report.governorate);
@@ -1211,6 +1287,8 @@ async function handleReportPage() {
         originalCreatedAt = report.createdAt;
         salesTableBody.innerHTML = '';
         if (report.sales) report.sales.forEach(createSaleRow);
+        if (competitorSalesTableBody) { competitorSalesTableBody.innerHTML = ''; if (report.salesOfCompetitor) report.salesOfCompetitor.forEach(createCompetitorSaleRow); updateCompetitorSaleTotals(); }
+        updateCompetitorSalesVisibility();
         expensesTableBody.innerHTML = '';
         if (report.expenses) report.expenses.forEach(createExpenseRow);
         updateSaleTotals();
@@ -1226,7 +1304,7 @@ async function handleReportPage() {
     $('#governorate').on('change', () => { const s = $('#governorate').val(); populateSelect(regionSelect, [...new Set(DB.locations.filter(l => l.gov === s).map(l => l.region))]); populateSelect(marketSelect, []); });
     $('#region').on('change', () => { const s = $('#region').val(); populateSelect(marketSelect, [...new Set(DB.locations.filter(l => l.region === s).map(l => l.market))]); });
     $('#inventoryDependency').on('change', function() { const s = $(this).val(); let n = ''; if (s) { const m = DB.employees.find(e => e.name === s); if (m && m.mgr) n = m.mgr; } supervisorInput.value = n; });
-    $('#campaign').on('change', function() { salesTableBody.innerHTML = ''; expensesTableBody.innerHTML = ''; updateSaleTotals(); const bi = document.getElementById('barcodeInput'); if (bi) bi.value = ''; const bs = document.getElementById('barcodeStatus'); if (bs) bs.textContent = ''; focusBarcodeInput(); });
+    $('#campaign').on('change', function() { salesTableBody.innerHTML = ''; expensesTableBody.innerHTML = ''; if (competitorSalesTableBody) competitorSalesTableBody.innerHTML = ''; updateCompetitorSalesVisibility(); updateSaleTotals(); const bi = document.getElementById('barcodeInput'); if (bi) bi.value = ''; const bs = document.getElementById('barcodeStatus'); if (bs) bs.textContent = ''; focusBarcodeInput(); });
     
     const updatePhoneNumberRequirement = () => {
         const eventValue = String($('#event').val() || '').trim();
@@ -1242,6 +1320,10 @@ async function handleReportPage() {
 
     $('#event').on('change', function() {
         updatePhoneNumberRequirement();
+        updateCompetitorSalesVisibility();
+        // أسعار المبيعات تعتمد على Products فقط في ترويج وبيع مباشر، وفي باقي الأحداث تكون 0.
+        salesTableBody.querySelectorAll('tr').forEach(row => { const sel=row.querySelector('.sale-product'); const name=String($(sel).val()||'').trim(); const master=getSaleProducts().find(p=>p.name===name); if(sel && master) row.querySelector('.sale-price').value = isDirectSaleEvent() ? Number(master.price||0).toFixed(2) : '0.00'; });
+        updateSaleTotals();
         const isDirectPromotion = $(this).val() === 'ترويج مباشر';
         const marketSelectElement = $('#market_name');
         const currentValue = marketSelectElement.val();
@@ -1351,6 +1433,9 @@ async function handleReportPage() {
         return true;
     };
 
+    document.getElementById('competitorBarcodeInput')?.addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); clearTimeout(barcodeDebounceTimer); addCompetitorProductByBarcode(e.currentTarget.value); } });
+    document.getElementById('competitorBarcodeInput')?.addEventListener('input', e => { clearTimeout(barcodeDebounceTimer); const value=normalizeBarcode(e.currentTarget.value); if(value.length<6)return; barcodeDebounceTimer=setTimeout(()=>{ if(document.activeElement===e.currentTarget && normalizeBarcode(e.currentTarget.value).length>=6) addCompetitorProductByBarcode(e.currentTarget.value); },250); });
+
     // ===============================================================
     //                 USB SCANNER + CAMERA SCANNER
     // ===============================================================
@@ -1385,7 +1470,9 @@ async function handleReportPage() {
         cameraScanLocked = true;
         const added = cameraTarget === 'expense'
             ? addProductToExpensesByBarcode(barcode)
-            : addProductToSalesByBarcode(barcode);
+            : cameraTarget === 'competitor'
+                ? addCompetitorProductByBarcode(barcode)
+                : addProductToSalesByBarcode(barcode);
 
         const status = document.getElementById('cameraScannerStatus');
         status.textContent = added ? 'تمت إضافة المادة. سيتم إغلاق الكاميرا...' : 'لم يتم العثور على المادة.';
@@ -1422,7 +1509,9 @@ async function handleReportPage() {
         cameraScanLocked = false;
         status.textContent = target === 'expense'
             ? 'جاري تجهيز الكاميرا لمواد التذوق...'
-            : 'جاري تجهيز الكاميرا للمواد البيعية...';
+            : target === 'competitor'
+                ? 'جاري تجهيز الكاميرا لمواد المنافس...'
+                : 'جاري تجهيز الكاميرا للمواد البيعية...';
         barcodeCameraModal.show();
 
         const scannerConfig = {
@@ -1525,6 +1614,7 @@ async function handleReportPage() {
 
     scanBarcodeCameraBtn.addEventListener('click', () => startBarcodeCamera('sales'));
     scanExpenseBarcodeCameraBtn?.addEventListener('click', () => startBarcodeCamera('expense'));
+    document.getElementById('scanCompetitorBarcodeCameraBtn')?.addEventListener('click', () => startBarcodeCamera('competitor'));
 
     clearBarcodeBtn.addEventListener('click', () => {
         barcodeInput.value = '';
@@ -1536,6 +1626,7 @@ async function handleReportPage() {
         document.getElementById('expenseBarcodeStatus').textContent = '';
         focusExpenseBarcodeInput();
     });
+    document.getElementById('clearCompetitorBarcodeBtn')?.addEventListener('click', () => { const input=document.getElementById('competitorBarcodeInput'); if(input){input.value='';input.focus();} document.getElementById('competitorBarcodeStatus').textContent=''; });
 
     barcodeInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
@@ -1619,8 +1710,9 @@ async function handleHistoryPage() {
                 return `<tr><td>${s.product||'-'}</td><td>${p.toFixed(2)}</td><td>${q}</td><td>${t.toFixed(2)}</td></tr>`; 
             }).join('') : '<tr><td colspan="4" class="text-center text-muted">لا توجد مبيعات</td></tr>';
             const expensesRows = report.expenses?.length > 0 ? report.expenses.map(exp => `<tr><td>${exp.item || '-'}</td><td>${exp.quantity || '0'}</td></tr>`).join('') : '<tr><td colspan="2" class="text-center text-muted">لا توجد مصاريف</td></tr>';
+            const competitorSalesRows = report.salesOfCompetitor?.length > 0 ? report.salesOfCompetitor.map(s => `<tr><td>${s.product||'-'}</td><td>${Number(s.price||0).toFixed(2)}</td><td>${s.quantity||0}</td></tr>`).join('') : '<tr><td colspan="3" class="text-center text-muted">لا توجد مبيعات منافس</td></tr>';
             const promotersList = report.promoters && report.promoters.length > 0 ? report.promoters.join(', ') : 'لا يوجد';
-            const reportHTML = `<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#c-${report.id}"><strong>${report.campaign} - ${report.market}</strong> (${report.date})</button></h2><div id="c-${report.id}" class="accordion-collapse collapse" data-bs-parent="#reports-accordion"><div class="accordion-body"><p><strong>تاريخ الإنشاء:</strong> ${report.createdAt || 'غير مسجل'}</p><p><strong>الحدث:</strong> ${report.event} (${report.eventDays} أيام) | <strong>الوقت:</strong> ${report.timeFrom} - ${report.timeTo}</p><p><strong>الفريق:</strong> منسق (${report.coordinator || 'N/A'})، جرد (${report.inventoryDependency || 'N/A'})، مشرف (${report.supervisor || 'N/A'})</p><p><strong>المروجون:</strong> ${promotersList}</p><h5 class="mt-4">المبيعات</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>السعر</th><th>الكمية</th><th>المجموع</th></tr></thead><tbody>${salesRows}</tbody>${report.sales?.length > 0 ? `<tfoot class="table-light fw-bold"><tr><td class="text-end" colspan="2">الإجمالي:</td><td>${totalQuantity}</td><td>${grandTotal.toFixed(2)}</td></tr></tfoot>` : ''}</table><h5 class="mt-4">المصاريف</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>الكمية</th></tr></thead><tbody>${expensesRows}</tbody></table>${report.notes ? `<hr><p><strong>ملاحظات:</strong> ${report.notes}</p>` : ''}<div class="text-end mt-3 border-top pt-3"><a href="reports.html?edit=${report.id}" class="btn btn-sm btn-primary edit-report-btn" data-report-id="${report.id}"><i class="fa-solid fa-pen-to-square me-1"></i> تعديل</a></div></div></div></div>`;
+            const reportHTML = `<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#c-${report.id}"><strong>${report.campaign} - ${report.market}</strong> (${report.date})</button></h2><div id="c-${report.id}" class="accordion-collapse collapse" data-bs-parent="#reports-accordion"><div class="accordion-body"><p><strong>تاريخ الإنشاء:</strong> ${report.createdAt || 'غير مسجل'}</p><p><strong>الحدث:</strong> ${report.event} (${report.eventDays} أيام) | <strong>الوقت:</strong> ${report.timeFrom} - ${report.timeTo}</p><p><strong>الفريق:</strong> منسق (${report.coordinator || 'N/A'})، جرد (${report.inventoryDependency || 'N/A'})، مشرف (${report.supervisor || 'N/A'})</p><p><strong>المروجون:</strong> ${promotersList}</p><h5 class="mt-4">المبيعات</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>السعر</th><th>الكمية</th><th>المجموع</th></tr></thead><tbody>${salesRows}</tbody>${report.sales?.length > 0 ? `<tfoot class="table-light fw-bold"><tr><td class="text-end" colspan="2">الإجمالي:</td><td>${totalQuantity}</td><td>${grandTotal.toFixed(2)}</td></tr></tfoot>` : ''}</table><h5 class="mt-4">مبيعات المنافس</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>السعر</th><th>الكمية</th></tr></thead><tbody>${competitorSalesRows}</tbody></table><h5 class="mt-4">المصاريف</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>الكمية</th></tr></thead><tbody>${expensesRows}</tbody></table>${report.notes ? `<hr><p><strong>ملاحظات:</strong> ${report.notes}</p>` : ''}<div class="text-end mt-3 border-top pt-3"><a href="reports.html?edit=${report.id}" class="btn btn-sm btn-primary edit-report-btn" data-report-id="${report.id}"><i class="fa-solid fa-pen-to-square me-1"></i> تعديل</a></div></div></div></div>`;
             reportsAccordion.insertAdjacentHTML('beforeend', reportHTML);
         });
         reportsAccordion.querySelectorAll('.edit-report-btn').forEach(button => {
