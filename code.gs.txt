@@ -11,7 +11,7 @@ const promotersSheet = aSheet.getSheetByName("promoters");
 const usersSheet = aSheet.getSheetByName("Users");
 const cache = CacheService.getScriptCache();
 const CACHE_EXPIRATION_SECONDS = 3600;
-const INITIAL_DATA_CACHE_VERSION = 'v18-competitor-products-fixed';
+const INITIAL_DATA_CACHE_VERSION = 'v20-user-history-sales-visibility';
 
 function doGet(e) {
   try {
@@ -19,7 +19,7 @@ function doGet(e) {
     let response;
     switch (action) {
       case "getInitialData": response = getInitialData(e.parameter.forceRefresh === "1"); break;
-      case "getReports": response = getReports(); break;
+      case "getReports": response = getReports(e.parameter.userId, e.parameter.role, e.parameter.userName); break;
       case "getReportById": response = getReportById(e.parameter.id); break;
       case "findProductByBarcode": response = findProductByBarcode(e.parameter.barcode, e.parameter.campaign); break;
       case "getCompetitorProducts": response = getCompetitorProductsFromSheet(); break;
@@ -347,6 +347,7 @@ function updateProductPrice(payload) {
   cache.remove('initialData_' + INITIAL_DATA_CACHE_VERSION);
   cache.remove('allReports');
   cache.remove('allReports_v2');
+  cache.remove('allReports_v3_user_history');
   return {status:'success', updated:matches, price:price};
 }
 
@@ -354,11 +355,17 @@ function refreshCache() {
   cache.remove('initialData_' + INITIAL_DATA_CACHE_VERSION);
   cache.remove('allReports');
   cache.remove('allReports_v2');
+  cache.remove('allReports_v3_user_history');
   getInitialData(true);
   return {status:'success', message:'تم تحديث الكاش بنجاح'};
 }
 
 function handleReportSubmission(reportData) {
+  reportData = reportData || {};
+  ensureReportsColumn('createdById');
+  ensureReportsColumn('createdByName');
+  const submittedUserId = String(reportData.createdById || '').trim();
+  const submittedUserName = String(reportData.createdByName || '').trim();
   const eventType = String(reportData.event || '').trim();
   const phoneNumber = String(reportData.phoneNumber || '').trim();
   if (eventType === 'ترويج وبيع غير مباشر' && !phoneNumber) {
@@ -369,6 +376,21 @@ function handleReportSubmission(reportData) {
   const reportId = String(reportData.id);
   const reportIds = reportsSheet.getRange('A2:A').getValues().flat().map(String);
   const existingRowIndex = reportIds.indexOf(reportId);
+  // عند التعديل نُبقي مالك التقرير الأصلي كما هو.
+  if (existingRowIndex !== -1) {
+    const existingRow = reportsSheet.getRange(existingRowIndex + 2, 1, 1, headers.length).getValues()[0];
+    const ownerIdCol = headers.findIndex(h => normalizeHeaderName(h) === normalizeHeaderName('createdById'));
+    const ownerNameCol = headers.findIndex(h => normalizeHeaderName(h) === normalizeHeaderName('createdByName'));
+    if (ownerIdCol >= 0 && String(existingRow[ownerIdCol] || '').trim()) reportData.createdById = String(existingRow[ownerIdCol]);
+    if (ownerNameCol >= 0 && String(existingRow[ownerNameCol] || '').trim()) reportData.createdByName = String(existingRow[ownerNameCol]);
+  }
+
+  // ملكية التقرير: تُحفظ عند الإنشاء، وعند التعديل يتم الحفاظ على المالك الأصلي أعلاه.
+  if (existingRowIndex === -1) {
+    reportData.createdById = submittedUserId;
+    reportData.createdByName = submittedUserName;
+  }
+
   const newRow = headers.map(header => reportData[header] === undefined ? '' : (Array.isArray(reportData[header]) ? JSON.stringify(reportData[header]) : reportData[header]));
 
   if (existingRowIndex !== -1) {
@@ -380,7 +402,7 @@ function handleReportSubmission(reportData) {
 
   addReportDetails(reportData);
   updateProductPrices(reportData);
-  cache.removeAll(['allReports','allReports_v2','initialData_' + INITIAL_DATA_CACHE_VERSION]);
+  cache.removeAll(['allReports','allReports_v2','allReports_v3_user_history','initialData_' + INITIAL_DATA_CACHE_VERSION]);
   return {status:'success', reportId:reportId};
 }
 
@@ -439,12 +461,15 @@ function normalizeReportDateTimeFields(reportObj) {
   return reportObj;
 }
 
-function getReports() {
+function getReports(userId, userRole, userName) {
   // v2 حتى لا نستخدم بيانات allReports القديمة المخزنة قبل إصلاح التاريخ والوقت.
-  const cacheKey = 'allReports_v2';
+  const cacheKey = 'allReports_v3_user_history';
   const cachedData = cache.get(cacheKey);
-  if (cachedData) return JSON.parse(cachedData);
-  if (reportsSheet.getLastRow() < 2) return [];
+  let allReports;
+  if (cachedData) {
+    allReports = JSON.parse(cachedData);
+  } else {
+    if (reportsSheet.getLastRow() < 2) return [];
   const reportsData = reportsSheet.getDataRange().getValues();
   const salesData = salesSheet.getLastRow()>1 ? salesSheet.getDataRange().getValues() : [];
   const competitorSalesData = salesOfCompetitorSheet && salesOfCompetitorSheet.getLastRow()>1 ? salesOfCompetitorSheet.getDataRange().getValues() : [];
@@ -480,9 +505,20 @@ function getReports() {
     promotersData.shift();
     promotersData.forEach(([id,name]) => { const report=reportsMap.get(String(id)); if(report){ if(!Array.isArray(report.promoters)) report.promoters=[]; if(name) report.promoters.push(name); } });
   }
-  const finalReports=Array.from(reportsMap.values());
-  try { cache.put(cacheKey,JSON.stringify(finalReports),CACHE_EXPIRATION_SECONDS); } catch(e) {}
-  return finalReports;
+    allReports=Array.from(reportsMap.values());
+    try { cache.put(cacheKey,JSON.stringify(allReports),CACHE_EXPIRATION_SECONDS); } catch(e) {}
+  }
+
+  // سجل المستخدم: نعتمد على createdById، مع fallback إلى الاسم للتقارير القديمة/التي لا تحتوي المعرّف.
+  const normalizedRole = String(userRole || '').trim().toLowerCase();
+  if (normalizedRole === 'admin' || !userId) return allReports;
+  const uid = String(userId).trim();
+  const uname = String(userName || '').trim();
+  return allReports.filter(r => {
+    const ownerId = String(r.createdById || '').trim();
+    const ownerName = String(r.createdByName || '').trim();
+    return (ownerId && ownerId === uid) || (!ownerId && uname && ownerName === uname);
+  });
 }
 
 function getReportById(id) {

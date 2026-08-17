@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDe9tx4r7_w71gasC-BQ-aZn185ZIM2Ae6HjmAbsoFsp9XEjdMnBySHsZeiU_cV4A6/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5QGLZbTIttCoathgmgmuJqWZPvlL7EdZ_rCy6M_D2GiwViqUVIgG4I1bSzv85ezJr/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -545,7 +545,7 @@ async function handleReportPage() {
     form.style.display = 'block';
     setupLocationAddButtons(DB);
 
-    const reportForm = document.getElementById('reportForm'), governorateSelect = document.getElementById('governorate'), regionSelect = document.getElementById('region'), marketSelect = document.getElementById('market_name'), campaignSelect = document.getElementById('campaign'), salesTableBody = document.getElementById('sales-table-body'), expensesTableBody = document.getElementById('expenses-table-body'), addSaleRowBtn = document.getElementById('add-sale-row'), addExpenseRowBtn = document.getElementById('add-expense-row'), mainSubmitBtn = document.querySelector('.main-submit-btn'), supervisorInput = document.getElementById('supervisor'), submitAndAddAnotherBtn = document.getElementById('submitAndAddAnotherBtn');
+    const reportForm = document.getElementById('reportForm'), governorateSelect = document.getElementById('governorate'), regionSelect = document.getElementById('region'), marketSelect = document.getElementById('market_name'), campaignSelect = document.getElementById('campaign'), salesTableBody = document.getElementById('sales-table-body'), salesCard = document.getElementById('salesCard'), expensesTableBody = document.getElementById('expenses-table-body'), addSaleRowBtn = document.getElementById('add-sale-row'), addExpenseRowBtn = document.getElementById('add-expense-row'), mainSubmitBtn = document.querySelector('.main-submit-btn'), supervisorInput = document.getElementById('supervisor'), submitAndAddAnotherBtn = document.getElementById('submitAndAddAnotherBtn');
     const competitorSalesCard = document.getElementById('competitorSalesCard'), competitorSalesTableBody = document.getElementById('competitor-sales-table-body'), addCompetitorSaleRowBtn = document.getElementById('add-competitor-sale-row'), competitorProductModal = new bootstrap.Modal(document.getElementById('competitorProductSelectionModal')), competitorProductSearchInput = document.getElementById('competitorProductSearchInput'), competitorProductSelectionTbody = document.querySelector('#competitorProductSelectionTable tbody'), addSelectedCompetitorProductsBtn = document.getElementById('addSelectedCompetitorProductsBtn');
     const productModal = new bootstrap.Modal(document.getElementById('productSelectionModal'));
     const productSearchInput = document.getElementById('productSearchInput');
@@ -568,7 +568,10 @@ async function handleReportPage() {
     };
     window.showToast = showToast;
 
-    const getFormState = () => ({
+    const getFormState = () => {
+        const loggedUser = JSON.parse(localStorage.getItem('currentUser')) || JSON.parse(sessionStorage.getItem('currentUser')) || {};
+        const directPromotion = String($('#event').val() || '').trim() === 'ترويج مباشر';
+        return {
         governorate: $('#governorate').val(), region: $('#region').val(), market: $('#market_name').val(),
         campaign: $('#campaign').val(), event: $('#event').val(),
         eventDays: document.getElementById('eventDays').value, date: document.getElementById('date').value,
@@ -579,10 +582,13 @@ async function handleReportPage() {
         promoter3: $('#promoter3').val(), promoter4: $('#promoter4').val(),
         promoters: getSelectedPromoters(),
         notes: document.getElementById('notes').value,
-        sales: Array.from(salesTableBody.querySelectorAll('tr')).map(r => ({ product: $(r.querySelector('.sale-product')).val(), price: Number(r.querySelector('.sale-price').value) || 0, quantity: Number(r.querySelector('.sale-quantity').value) || 0, campaign: $('#campaign').val() })),
+        sales: directPromotion ? [] : Array.from(salesTableBody.querySelectorAll('tr')).map(r => ({ product: $(r.querySelector('.sale-product')).val(), price: Number(r.querySelector('.sale-price').value) || 0, quantity: Number(r.querySelector('.sale-quantity').value) || 0, campaign: $('#campaign').val() })),
         salesOfCompetitor: Array.from(document.querySelectorAll('#competitor-sales-table-body tr')).map(r => ({ product: $(r.querySelector('.competitor-product')).val(), price: Number(r.querySelector('.competitor-price').value) || 0, quantity: Number(r.querySelector('.competitor-quantity').value) || 0 })),
         expenses: Array.from(expensesTableBody.querySelectorAll('tr')).map(r => ({ item: $(r.querySelector('.expense-item')).val(), quantity: r.querySelector('.expense-quantity').value })),
-    });
+        createdById: loggedUser.id || '',
+        createdByName: loggedUser.name || '',
+        };
+    };
     const saveFormState = () => { if (isFormDirty) { localStorage.setItem(FORM_STATE_KEY, JSON.stringify(getFormState())); } };
     const loadFormState = () => {
         const savedState = localStorage.getItem(FORM_STATE_KEY);
@@ -1171,6 +1177,15 @@ async function handleReportPage() {
             });
     };
     
+    const updateSalesVisibility = () => {
+        const directPromotion = String($('#event').val() || '').trim() === 'ترويج مباشر';
+        if (salesCard) salesCard.style.display = directPromotion ? 'none' : '';
+        if (directPromotion) {
+            salesTableBody.innerHTML = '';
+            updateSaleTotals();
+        }
+    };
+
     const updateCompetitorSalesVisibility = () => {
         const visible = String($('#event').val() || '').trim() === 'ترويج مولات';
         if (competitorSalesCard) competitorSalesCard.style.display = visible ? '' : 'none';
@@ -1331,6 +1346,7 @@ async function handleReportPage() {
         originalCreatedAt = report.createdAt;
         salesTableBody.innerHTML = '';
         if (report.sales) report.sales.forEach(createSaleRow);
+        updateSalesVisibility();
         if (competitorSalesTableBody) { competitorSalesTableBody.innerHTML = ''; if (report.salesOfCompetitor) report.salesOfCompetitor.forEach(createCompetitorSaleRow); updateCompetitorSaleTotals(); }
         updateCompetitorSalesVisibility();
         expensesTableBody.innerHTML = '';
@@ -1364,6 +1380,7 @@ async function handleReportPage() {
 
     $('#event').on('change', function() {
         updatePhoneNumberRequirement();
+        updateSalesVisibility();
         updateCompetitorSalesVisibility();
         // أسعار المبيعات تعتمد على Products فقط في ترويج وبيع مباشر؛ وفي باقي الأحداث يجب على المستخدم إدخال السعر.
         salesTableBody.querySelectorAll('tr').forEach(row => { const sel=row.querySelector('.sale-product'); const name=String($(sel).val()||'').trim(); const master=getSaleProducts().find(p=>p.name===name); if(sel && master) row.querySelector('.sale-price').value = isDirectSaleEvent() ? Number(master.price||0).toFixed(2) : ''; });
@@ -1381,6 +1398,7 @@ async function handleReportPage() {
         marketSelectElement.val(currentValue).trigger('change');
     }).trigger('change');
     updatePhoneNumberRequirement();
+    updateSalesVisibility();
 
     const urlParams = new URLSearchParams(window.location.search);
     const editId = urlParams.get('edit');
@@ -1733,11 +1751,17 @@ async function handleHistoryPage() {
     const reportsAccordion = document.getElementById('reports-accordion');
     const searchInput = document.getElementById('searchInput');
     const noResultsMessage = document.getElementById('no-results-message');
+    const reportsCount = document.getElementById('reportsCount');
     const currentUser = JSON.parse(localStorage.getItem('currentUser')) || JSON.parse(sessionStorage.getItem('currentUser'));
     let currentReports = [];
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const historyTitle = document.getElementById('historyTitle');
+    if (historyTitle) historyTitle.textContent = isAdmin ? 'سجل جميع التقارير' : 'سجل تقاريري';
 
     const renderReports = (reportsToRender) => {
         reportsAccordion.innerHTML = '';
+        const count = Array.isArray(reportsToRender) ? reportsToRender.length : 0;
+        if (reportsCount) reportsCount.textContent = `${count} تقرير${count === 1 ? '' : ''}`;
         if (!reportsToRender || reportsToRender.length === 0) {
             noResultsMessage.textContent = searchInput.value ? 'لا توجد تقارير تطابق بحثك.' : 'لا توجد تقارير محفوظة لعرضها.';
             noResultsMessage.classList.remove('d-none');
@@ -1784,10 +1808,21 @@ async function handleHistoryPage() {
 
     const cachedReportsJSON = localStorage.getItem('reportsCache');
     if (cachedReportsJSON) {
-        const allCachedReports = JSON.parse(cachedReportsJSON);
-        currentReports = currentUser.role === 'admin' ? allCachedReports : allCachedReports.filter(r => r.participants && r.participants.includes(currentUser.name));
-        renderReports(currentReports);
-    } else {
+        try {
+            const allCachedReports = JSON.parse(cachedReportsJSON);
+            if (Array.isArray(allCachedReports)) {
+                currentReports = currentUser.role === 'admin' ? allCachedReports : allCachedReports.filter(r => {
+                    const ownerId = String(r.createdById || '').trim();
+                    const ownerName = String(r.createdByName || '').trim();
+                    return (ownerId && ownerId === String(currentUser.id || '').trim()) || (!ownerId && ownerName && ownerName === String(currentUser.name || '').trim());
+                });
+                renderReports(currentReports);
+            }
+        } catch (e) {
+            localStorage.removeItem('reportsCache');
+        }
+    }
+    if (!cachedReportsJSON) {
         reportsAccordion.innerHTML = `<div class="text-center p-5"><i class="fa-solid fa-spinner fa-spin fa-2x"></i><p class="mt-2">جار تحميل السجل لأول مرة...</p></div>`;
     }
 
@@ -1799,17 +1834,29 @@ async function handleHistoryPage() {
     });
 
     try {
-        const res = await fetch(`${SCRIPT_URL}?action=getReports`);
+        const params = new URLSearchParams({
+            action: 'getReports',
+            userId: String(currentUser.id || ''),
+            role: String(currentUser.role || ''),
+            userName: String(currentUser.name || ''),
+            _: String(Date.now())
+        });
+        const res = await fetch(`${SCRIPT_URL}?${params.toString()}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const allFreshReports = await res.json();
+        if (!Array.isArray(allFreshReports)) throw new Error(allFreshReports?.message || 'استجابة غير صالحة من الخادم');
         const freshReportsJSON = JSON.stringify(allFreshReports);
-        if (freshReportsJSON !== cachedReportsJSON) {
-            localStorage.setItem('reportsCache', freshReportsJSON);
-            currentReports = currentUser.role === 'admin' ? allFreshReports : allFreshReports.filter(r => r.participants && r.participants.includes(currentUser.name));
-            searchInput.dispatchEvent(new Event('input'));
-        }
+        localStorage.setItem('reportsCache', freshReportsJSON);
+        // الخادم يعيد تقارير المستخدم عند الطلب، ونُبقي الفلترة هنا أيضاً كطبقة حماية للواجهة.
+        currentReports = currentUser.role === 'admin' ? allFreshReports : allFreshReports.filter(r => {
+            const ownerId = String(r.createdById || '').trim();
+            const ownerName = String(r.createdByName || '').trim();
+            return (ownerId && ownerId === String(currentUser.id || '').trim()) || (!ownerId && ownerName && ownerName === String(currentUser.name || '').trim());
+        });
+        renderReports(currentReports);
     } catch (error) {
         if (!cachedReportsJSON) {
-            reportsAccordion.innerHTML = `<div class="alert alert-danger">فشل تحميل سجل التقارير. يرجى التحقق من اتصالك بالإنترنت وتحديث الصفحة.</div>`;
+            reportsAccordion.innerHTML = `<div class="alert alert-danger">فشل تحميل سجل التقارير. يرجى التحقق من الاتصال وبيانات المستخدم ثم تحديث الصفحة.</div>`;
         }
     }
 }
