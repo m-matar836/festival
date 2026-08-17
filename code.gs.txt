@@ -344,20 +344,39 @@ function updateProductPrice(payload) {
   }
   if (!matches) throw new Error('المادة غير موجودة ضمن الحملة المحددة');
   range.setValues(values);
-  cache.remove('initialData_' + INITIAL_DATA_CACHE_VERSION);
-  cache.remove('allReports');
-  cache.remove('allReports_v2');
-  cache.remove('allReports_v3_user_history');
-  return {status:'success', updated:matches, price:price};
+  SpreadsheetApp.flush();
+
+  // السعر المعدل هو السعر المعتمد مباشرة: امسح كل كاشات البيانات المرتبطة
+  // حتى لا تعود الواجهة إلى السعر القديم عند إعادة فتح/مسح الباركود.
+  cache.removeAll([
+    'initialData_' + INITIAL_DATA_CACHE_VERSION,
+    'allReports',
+    'allReports_v2',
+    'allReports_v3_user_history'
+  ]);
+  // إعادة بناء كاش البيانات مباشرة بعد تعديل السعر، بحيث تكون Products هي المصدر
+  // الفعلي للسعر الجديد حتى قبل أي طلب لاحق من المتصفح.
+  getInitialData(true);
+
+  return {status:'success', updated:matches, price:price, cacheRefreshed:true};
 }
 
 function refreshCache() {
-  cache.remove('initialData_' + INITIAL_DATA_CACHE_VERSION);
-  cache.remove('allReports');
-  cache.remove('allReports_v2');
-  cache.remove('allReports_v3_user_history');
-  getInitialData(true);
-  return {status:'success', message:'تم تحديث الكاش بنجاح'};
+  cache.removeAll([
+    'initialData_' + INITIAL_DATA_CACHE_VERSION,
+    'allReports',
+    'allReports_v2',
+    'allReports_v3_user_history'
+  ]);
+
+  // إعادة بناء بيانات الموقع فوراً من الـSheet، وليس فقط حذف الكاش.
+  const initialData = getInitialData(true);
+  return {
+    status:'success',
+    message:'تم تحديث جميع بيانات الموقع والكاش بنجاح',
+    initialData: initialData,
+    refreshedAt: new Date().toISOString()
+  };
 }
 
 function handleReportSubmission(reportData) {

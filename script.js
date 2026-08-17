@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx5QGLZbTIttCoathgmgmuJqWZPvlL7EdZ_rCy6M_D2GiwViqUVIgG4I1bSzv85ezJr/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwM8lFkSiaGM5SmS6cFwbEtUXzFoc91m25lh9RT6OVMnGukJjHL_yg20sxm6_18VE75/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -201,7 +201,7 @@ const APP_DB_TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
 
 let cacheRefreshInProgress = false;
 
-async function refreshAppCache({ silent = false } = {}) {
+async function refreshAppCache({ silent = false, refreshReports = true } = {}) {
     if (cacheRefreshInProgress) return { ok: false, busy: true };
     if (!navigator.onLine) {
         if (!silent) alert('لا يمكن تحديث البيانات بدون اتصال بالإنترنت.');
@@ -257,6 +257,23 @@ async function refreshAppCache({ silent = false } = {}) {
         // Replace the cache only after a complete successful response.
         localStorage.setItem(APP_DB_KEY, JSON.stringify(freshDB));
         localStorage.setItem(APP_DB_TS_KEY, String(Date.now()));
+
+        // تحديث كاش سجل التقارير أيضاً حتى يكون زر «تحديث البيانات» شاملاً لكل بيانات الموقع.
+        if (refreshReports) {
+            try {
+                const currentUser = JSON.parse(localStorage.getItem('currentUser')) || JSON.parse(sessionStorage.getItem('currentUser'));
+                if (currentUser) {
+                    const reportUrl = `${SCRIPT_URL}?action=getReports&userId=${encodeURIComponent(String(currentUser.id || ''))}&role=${encodeURIComponent(String(currentUser.role || ''))}&userName=${encodeURIComponent(String(currentUser.name || ''))}&_=refreshReports_${Date.now()}`;
+                    const reportsResponse = await fetch(reportUrl, { cache: 'no-store' });
+                    if (reportsResponse.ok) {
+                        const freshReports = await reportsResponse.json();
+                        if (Array.isArray(freshReports)) localStorage.setItem('reportsCache', JSON.stringify(freshReports));
+                    }
+                }
+            } catch (reportsError) {
+                console.warn('Reports refresh skipped:', reportsError);
+            }
+        }
 
         // Tell the current page that fresh data is available.
         window.dispatchEvent(new CustomEvent('dbCacheRefreshed', { detail: freshDB }));
@@ -900,29 +917,37 @@ async function handleReportPage() {
     let priceUpdateTimer = null;
     const updateMasterProductPrice = async (row) => {
         if (!navigator.onLine) return;
-        const product = String($(row.querySelector('.sale-product')).val() || '').trim();
+        if (!isDirectSaleEvent()) return;
+
+        const productSelect = row.querySelector('.sale-product');
+        const product = String($(productSelect).val() || '').trim();
         const price = Number(row.querySelector('.sale-price')?.value);
         const campaign = String(campaignSelect.value || '').trim();
-        if (!product || !campaign || !Number.isFinite(price) || price < 0 || !isDirectSaleEvent()) return;
+        const barcode = normalizeBarcode($(productSelect).find('option:selected').data('barcode') || '');
+
+        if (!product || !campaign || !Number.isFinite(price) || price < 0) return;
+
         try {
             const res = await fetch(SCRIPT_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                 body: JSON.stringify({
                     action: 'updateProductPrice',
-                    payload: {
-                        product,
-                        price,
-                        campaign,
-                        barcode: normalizeBarcode(row.querySelector('.sale-product option:checked')?.dataset?.barcode || '')
-                    }
+                    payload: { product, price, campaign, barcode }
                 }),
                 cache: 'no-store'
             });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const result = await res.json();
             if (result.status !== 'success') throw new Error(result.message || 'تعذر تحديث السعر');
-            // بعد تحديث Products، اسحب البيانات الجديدة فوراً وأعد بناء الكاش المحلي.
-            await refreshAppCache({ silent: true });
+
+            // السعر أصبح محفوظاً في Products. أعد تحميل بيانات الموقع كاملة من الـSheet
+            // حتى يصبح السعر الجديد هو السعر المعتمد فوراً في الواجهة والباركود.
+            await refreshAppCache({ silent: true, refreshReports: false });
+
+            // حدّث الصف الحالي أيضاً من البيانات الجديدة، بدون إعادة فرض السعر القديم.
+            row.querySelector('.sale-price').value = Number(result.price).toFixed(2);
+            updateSaleTotals();
         } catch (error) {
             console.error('Immediate price update failed:', error);
             showToast(`تعذر تحديث سعر «${product}» على الشيت: ${error.message || error}`, true);
