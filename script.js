@@ -1391,20 +1391,20 @@ async function handleReportPage() {
     $('#inventoryDependency').on('change', function() { const s = $(this).val(); let n = ''; if (s) { const m = DB.employees.find(e => e.name === s); if (m && m.mgr) n = m.mgr; } supervisorInput.value = n; });
     $('#campaign').on('change', function() { salesTableBody.innerHTML = ''; expensesTableBody.innerHTML = ''; if (competitorSalesTableBody) competitorSalesTableBody.innerHTML = ''; updateCompetitorSalesVisibility(); updateSaleTotals(); const bi = document.getElementById('barcodeInput'); if (bi) bi.value = ''; const bs = document.getElementById('barcodeStatus'); if (bs) bs.textContent = ''; focusBarcodeInput(); });
     
-    const updatePhoneNumberRequirement = () => {
-        const eventValue = String($('#event').val() || '').trim();
-        const phoneInput = document.getElementById('phoneNumber');
-        const hint = document.getElementById('phoneNumberHint');
-        if (!phoneInput) return;
-        const required = eventValue === 'ترويج وبيع غير مباشر';
-        phoneInput.required = required;
-        phoneInput.setAttribute('aria-required', required ? 'true' : 'false');
-        if (hint) hint.textContent = required ? 'رقم هاتف صاحب المحل مطلوب لهذا النوع من الحدث.' : 'رقم الهاتف اختياري لهذا النوع من الحدث.';
-        if (!required) phoneInput.setCustomValidity('');
-    };
+    // const updatePhoneNumberRequirement = () => {
+    //     const eventValue = String($('#event').val() || '').trim();
+    //     const phoneInput = document.getElementById('phoneNumber');
+    //     const hint = document.getElementById('phoneNumberHint');
+    //     if (!phoneInput) return;
+    //     const required = eventValue === 'ترويج وبيع غير مباشر';
+    //     phoneInput.required = required;
+    //     phoneInput.setAttribute('aria-required', required ? 'true' : 'false');
+    //     if (hint) hint.textContent = required ? 'رقم هاتف صاحب المحل مطلوب لهذا النوع من الحدث.' : 'رقم الهاتف اختياري لهذا النوع من الحدث.';
+    //     if (!required) phoneInput.setCustomValidity('');
+    // };
 
     $('#event').on('change', function() {
-        updatePhoneNumberRequirement();
+       // updatePhoneNumberRequirement();
         updateSalesVisibility();
         updateCompetitorSalesVisibility();
         // أسعار المبيعات تعتمد على Products فقط في ترويج وبيع مباشر؛ وفي باقي الأحداث يجب على المستخدم إدخال السعر.
@@ -1422,7 +1422,7 @@ async function handleReportPage() {
         initSelect2(marketSelectElement, 'اختر أو أدخل اسم المحل...', isDirectPromotion);
         marketSelectElement.val(currentValue).trigger('change');
     }).trigger('change');
-    updatePhoneNumberRequirement();
+    //updatePhoneNumberRequirement();
     updateSalesVisibility();
 
     const urlParams = new URLSearchParams(window.location.search);
