@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyyqMUty5ydSa6DZr93qcLxo4zTmBRAzmuJ_85zgcFoKawMXvF9FQJFZD_iX2IaywjT/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDe9tx4r7_w71gasC-BQ-aZn185ZIM2Ae6HjmAbsoFsp9XEjdMnBySHsZeiU_cV4A6/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -195,7 +195,7 @@ async function getDbData() {
 // ===================================================================
 //                 CACHE REFRESH / FAST DATA UPDATE
 // ===================================================================
-const APP_DB_VERSION = 'v16-competitor-sales-exact';
+const APP_DB_VERSION = 'v18-competitor-products-fixed';
 const APP_DB_KEY = `appDB_${APP_DB_VERSION}`;
 const APP_DB_TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
 
@@ -507,6 +507,7 @@ async function handleReportPage() {
     window.addEventListener('dbCacheRefreshed', (event) => {
         if (!event.detail) return;
         DB = event.detail;
+        if (!Array.isArray(DB.competitorProducts)) DB.competitorProducts = [];
         try {
             // Rebuild the main selects from the fresh data where applicable.
             const selectedGovernorate = governorateSelect.value;
@@ -781,8 +782,10 @@ async function handleReportPage() {
         .replace(/\s+/g, ' ');
     const getSaleProducts = () => getCampaignProducts().filter(p => normalizeCategory(p.category) === 'مادة بيعية');
     const isDirectSaleEvent = () => String($('#event').val() || '').trim() === 'ترويج وبيع مباشر';
-    const getSaleDisplayPrice = (product) => isDirectSaleEvent() ? Number(product?.price || 0) : 0;
-    const getCompetitorProducts = () => Array.isArray(DB.competitorProducts) ? DB.competitorProducts.filter(p => p && p.name && !isCancelledProduct(p)) : [];
+    const getSaleDisplayPrice = (product) => isDirectSaleEvent() ? Number(product?.price || 0) : '';
+    const getCompetitorProducts = () => Array.isArray(DB.competitorProducts)
+        ? DB.competitorProducts.filter(p => p && p.name && !isCancelledProduct(p))
+        : [];
     const getTastingProducts = () => getCampaignProducts().filter(p => normalizeCategory(p.category) === 'مادة تذوق');
 
     const normalizeBarcode = (value) => String(value ?? '').trim();
@@ -939,10 +942,10 @@ async function handleReportPage() {
             const safeName = String(p.name ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             return `<option value="${safeName}" data-price="${getSaleDisplayPrice(p)}" data-barcode="${normalizeBarcode(p.barcode)}">${safeName}</option>`;
         }).join('');
-        const priceValue = isDirectSaleEvent() ? (sale.price !== undefined && sale.price !== '' ? Number(sale.price || 0).toFixed(2) : '0.00') : '0.00';
+        const priceValue = isDirectSaleEvent() ? (sale.price !== undefined && sale.price !== '' ? Number(sale.price || 0).toFixed(2) : '0.00') : (sale.price !== undefined && sale.price !== '' ? Number(sale.price).toFixed(2) : '');
         const quantityValue = sale.quantity !== undefined && sale.quantity !== '' ? sale.quantity : '';
 
-        row.innerHTML = `<td><select class="form-select form-select-sm sale-product" required><option value="" selected disabled>اختر...</option>${productOptions}</select></td><td><input type="number" class="form-control form-control-sm sale-price" value="${priceValue}" step="1" required></td><td><input type="number" class="form-control form-control-sm sale-quantity" value="${quantityValue}" min="1" required></td><td><input type="text" class="form-control form-control-sm row-total" value="0.00" readonly></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
+        row.innerHTML = `<td><select class="form-select form-select-sm sale-product" required><option value="" selected disabled>اختر...</option>${productOptions}</select></td><td><input type="number" class="form-control form-control-sm sale-price" value="${priceValue}" step="0.01" required></td><td><input type="number" class="form-control form-control-sm sale-quantity" value="${quantityValue}" min="1" required></td><td><input type="text" class="form-control form-control-sm row-total" value="0.00" readonly></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
         row.querySelector('.remove-row-btn').addEventListener('click', () => {
             row.remove();
             updateSaleTotals();
@@ -1044,8 +1047,26 @@ async function handleReportPage() {
         reportForm.classList.remove('was-validated');
     };
 
+    const validateRequiredPrices = () => {
+        const eventValue = String($('#event').val() || '').trim();
+        const requiresUserPrice = eventValue !== 'ترويج وبيع مباشر';
+        let firstInvalid = null;
+
+        document.querySelectorAll('.sale-price, .competitor-price').forEach(input => {
+            input.setCustomValidity('');
+            if (requiresUserPrice && String(input.value ?? '').trim() === '') {
+                input.setCustomValidity('السعر مطلوب لهذا النوع من الحدث.');
+                if (!firstInvalid) firstInvalid = input;
+            }
+        });
+
+        return firstInvalid;
+    };
+
     const handleFormSubmit = (event, editId, addAnother = false) => {
         if(event) event.preventDefault();
+        const firstInvalidPrice = validateRequiredPrices();
+        if (firstInvalidPrice) firstInvalidPrice.focus();
         if (!reportForm.checkValidity()) { 
             if(event) event.stopPropagation(); 
             reportForm.classList.add('was-validated'); 
@@ -1149,6 +1170,7 @@ async function handleReportPage() {
                 }
             });
     };
+    
     const updateCompetitorSalesVisibility = () => {
         const visible = String($('#event').val() || '').trim() === 'ترويج مولات';
         if (competitorSalesCard) competitorSalesCard.style.display = visible ? '' : 'none';
@@ -1178,9 +1200,9 @@ async function handleReportPage() {
             const safeName = escapeHtml(String(p.name ?? ''));
             return `<option value="${safeName}" data-barcode="${escapeHtml(normalizeBarcode(p.barcode))}">${safeName}</option>`;
         }).join('');
-        const price = sale.price !== undefined && sale.price !== '' ? Number(sale.price || 0).toFixed(2) : '0.00';
+        const price = sale.price !== undefined && sale.price !== '' ? Number(sale.price || 0).toFixed(2) : '';
         const qty = sale.quantity !== undefined && sale.quantity !== '' ? sale.quantity : '';
-        row.innerHTML = `<td><select class="form-select form-select-sm competitor-product" required><option value="" selected disabled>اختر...</option>${productOptions}</select></td><td><input type="number" class="form-control form-control-sm competitor-price" value="${price}" step="1" min="0" required></td><td><input type="number" class="form-control form-control-sm competitor-quantity" value="${qty}" min="1" required></td><td><input type="text" class="form-control form-control-sm competitor-row-total" value="0.00" readonly></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-competitor-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
+        row.innerHTML = `<td><select class="form-select form-select-sm competitor-product" required><option value="" selected disabled>اختر...</option>${productOptions}</select></td><td><input type="number" class="form-control form-control-sm competitor-price" value="${price}" step="0.01" min="0" required></td><td><input type="number" class="form-control form-control-sm competitor-quantity" value="${qty}" min="1" required></td><td><input type="text" class="form-control form-control-sm competitor-row-total" value="0.00" readonly></td><td><button type="button" class="btn btn-sm btn-outline-danger remove-competitor-row-btn"><i class="fa-solid fa-trash-can"></i></button></td>`;
         row.querySelector('.remove-competitor-row-btn').addEventListener('click', () => { row.remove(); updateCompetitorSaleTotals(); isFormDirty=true; saveFormState(); });
         row.querySelector('.competitor-price').addEventListener('input', () => { updateCompetitorSaleTotals(); isFormDirty=true; saveFormState(); });
         row.querySelector('.competitor-quantity').addEventListener('input', () => { updateCompetitorSaleTotals(); isFormDirty=true; saveFormState(); });
@@ -1190,10 +1212,32 @@ async function handleReportPage() {
         updateCompetitorSaleTotals();
     };
 
-    const populateCompetitorProductModal = () => {
-        const products = getCompetitorProducts();
+    const populateCompetitorProductModal = async () => {
+        let products = getCompetitorProducts();
+
+        // If the current browser cache does not contain competitor products,
+        // fetch them directly from ProductsOfCompetitor.
+        if (!products.length && navigator.onLine) {
+            try {
+                const res = await fetch(`${SCRIPT_URL}?action=getCompetitorProducts&v=${APP_DB_VERSION}&t=${Date.now()}`, {cache:'no-store'});
+                const freshProducts = await res.json();
+                if (Array.isArray(freshProducts)) {
+                    DB.competitorProducts = freshProducts;
+                    products = getCompetitorProducts();
+                    localStorage.setItem(APP_DB_KEY, JSON.stringify(DB));
+                    localStorage.setItem(APP_DB_TS_KEY, String(Date.now()));
+                }
+            } catch (e) {
+                console.warn('تعذر جلب مواد المنافس مباشرة:', e);
+            }
+        }
+
         competitorProductSelectionTbody.innerHTML = '';
-        products.forEach(p => competitorProductSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input competitor-product-select-check" type="checkbox" value="${escapeHtml(p.name)}" style="pointer-events:none;"></div></td><td>${escapeHtml(p.name)}</td></tr>`));
+        if (!products.length) {
+            competitorProductSelectionTbody.innerHTML = '<tr><td colspan="2" class="text-center text-muted">لا توجد مواد في ProductsOfCompetitor</td></tr>';
+        } else {
+            products.forEach(p => competitorProductSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input competitor-product-select-check" type="checkbox" value="${escapeHtml(p.name)}" style="pointer-events:none;"></div></td><td>${escapeHtml(p.name)}</td></tr>`));
+        }
         competitorProductSearchInput.value = '';
         competitorProductSearchInput.dispatchEvent(new Event('input'));
     };
@@ -1207,7 +1251,7 @@ async function handleReportPage() {
         const existing = Array.from(competitorSalesTableBody.querySelectorAll('tr')).find(r => $(r.querySelector('.competitor-product')).val()===product.name);
         if (existing) {
             const q=existing.querySelector('.competitor-quantity'); q.value=(parseInt(q.value,10)||0)+1;
-        } else createCompetitorSaleRow({product:product.name,price:0,quantity:1});
+        } else createCompetitorSaleRow({product:product.name,quantity:1});
         updateCompetitorSaleTotals();
         if(status){status.textContent=`تمت إضافة «${product.name}».`;status.className='small mt-2 text-success';}
         isFormDirty=true; saveFormState();
@@ -1249,9 +1293,9 @@ async function handleReportPage() {
     setupModalRowClick(productSelectionTbody);
     setupModalRowClick(expenseSelectionTbody);
     setupModalRowClick(competitorProductSelectionTbody);
-    addCompetitorSaleRowBtn?.addEventListener('click', () => { const c=campaignSelect.value; if(!c){alert('يرجى اختيار نوع الحملة أولاً.');return;} populateCompetitorProductModal(); competitorProductModal.show(); });
+    addCompetitorSaleRowBtn?.addEventListener('click', async () => { const c=campaignSelect.value; if(!c){alert('يرجى اختيار نوع الحملة أولاً.');return;} await populateCompetitorProductModal(); competitorProductModal.show(); });
     competitorProductSearchInput?.addEventListener('input', () => { const q=competitorProductSearchInput.value.toLowerCase().trim(); competitorProductSelectionTbody.querySelectorAll('tr').forEach(r => r.style.display=r.cells[1].textContent.toLowerCase().includes(q)?'':'none'); });
-    addSelectedCompetitorProductsBtn?.addEventListener('click', () => { competitorProductSelectionTbody.querySelectorAll('.competitor-product-select-check:checked').forEach(c => createCompetitorSaleRow({product:c.value,price:0})); competitorProductModal.hide(); isFormDirty=true; saveFormState(); });
+    addSelectedCompetitorProductsBtn?.addEventListener('click', () => { competitorProductSelectionTbody.querySelectorAll('.competitor-product-select-check:checked').forEach(c => createCompetitorSaleRow({product:c.value})); competitorProductModal.hide(); isFormDirty=true; saveFormState(); });
     
     const initEditMode = (report) => {
         populateSelect(governorateSelect, [...new Set(DB.locations.map(l => l.gov))], report.governorate);
@@ -1321,8 +1365,9 @@ async function handleReportPage() {
     $('#event').on('change', function() {
         updatePhoneNumberRequirement();
         updateCompetitorSalesVisibility();
-        // أسعار المبيعات تعتمد على Products فقط في ترويج وبيع مباشر، وفي باقي الأحداث تكون 0.
-        salesTableBody.querySelectorAll('tr').forEach(row => { const sel=row.querySelector('.sale-product'); const name=String($(sel).val()||'').trim(); const master=getSaleProducts().find(p=>p.name===name); if(sel && master) row.querySelector('.sale-price').value = isDirectSaleEvent() ? Number(master.price||0).toFixed(2) : '0.00'; });
+        // أسعار المبيعات تعتمد على Products فقط في ترويج وبيع مباشر؛ وفي باقي الأحداث يجب على المستخدم إدخال السعر.
+        salesTableBody.querySelectorAll('tr').forEach(row => { const sel=row.querySelector('.sale-product'); const name=String($(sel).val()||'').trim(); const master=getSaleProducts().find(p=>p.name===name); if(sel && master) row.querySelector('.sale-price').value = isDirectSaleEvent() ? Number(master.price||0).toFixed(2) : ''; });
+        document.querySelectorAll('.sale-price, .competitor-price').forEach(input => input.setCustomValidity(''));
         updateSaleTotals();
         const isDirectPromotion = $(this).val() === 'ترويج مباشر';
         const marketSelectElement = $('#market_name');

@@ -11,7 +11,7 @@ const promotersSheet = aSheet.getSheetByName("promoters");
 const usersSheet = aSheet.getSheetByName("Users");
 const cache = CacheService.getScriptCache();
 const CACHE_EXPIRATION_SECONDS = 3600;
-const INITIAL_DATA_CACHE_VERSION = 'v16-competitor-sales-exact';
+const INITIAL_DATA_CACHE_VERSION = 'v18-competitor-products-fixed';
 
 function doGet(e) {
   try {
@@ -22,6 +22,7 @@ function doGet(e) {
       case "getReports": response = getReports(); break;
       case "getReportById": response = getReportById(e.parameter.id); break;
       case "findProductByBarcode": response = findProductByBarcode(e.parameter.barcode, e.parameter.campaign); break;
+      case "getCompetitorProducts": response = getCompetitorProductsFromSheet(); break;
       default: response = {status:"error", message:"Invalid GET Action"};
     }
     return createJsonResponse(response);
@@ -105,6 +106,27 @@ function isCancelledValue(value) {
   return ['true','1','yes','نعم'].includes(text);
 }
 
+
+function getCompetitorProductsFromSheet() {
+  const sheet = aSheet.getSheetByName("ProductsOfCompetitor");
+  if (!sheet || sheet.getLastRow() < 2) return [];
+
+  const values = sheet.getDataRange().getDisplayValues();
+  if (!values.length) return [];
+
+  const headers = values[0].map(h => String(h ?? '').trim());
+  const productCol = getColumnIndex(headers, ['product','المادة','اسم المادة'], 0);
+  const barcodeCol = getColumnIndex(headers, ['barcode','باركود','الباركود'], 1);
+  const cancelledCol = getColumnIndex(headers, ['إلغاء المادة','cancelled','canceled','الغاء المادة'], 2);
+
+  return values.slice(1).map(row => {
+    const name = String(row[productCol] ?? '').trim();
+    const barcode = String(row[barcodeCol] ?? '').trim();
+    const cancelled = isCancelledValue(row[cancelledCol]);
+    return { name, barcode, cancelled };
+  }).filter(p => p.name && !p.cancelled);
+}
+
 function getInitialData(forceRefresh) {
   const cacheKey = "initialData_" + INITIAL_DATA_CACHE_VERSION;
   if (!forceRefresh) {
@@ -146,19 +168,7 @@ function getInitialData(forceRefresh) {
     });
   }
 
-  const competitorProducts = [];
-  const competitorRows = sheetData.ProductsOfCompetitor || [];
-  if (competitorRows.length > 1) {
-    const headers = competitorRows[0].map(h => String(h ?? '').trim());
-    const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],0);
-    const barcodeCol = getColumnIndex(headers,['barcode','باركود','الباركود'],1);
-    const cancelledCol = getColumnIndex(headers,['إلغاء المادة','cancelled','canceled','الغاء المادة'],2);
-    competitorRows.slice(1).forEach(row => {
-      const name = String(row[productCol] ?? '').trim();
-      if (!name || isCancelledValue(row[cancelledCol])) return;
-      competitorProducts.push({name, barcode:String(row[barcodeCol] ?? '').trim(), cancelled:false});
-    });
-  }
+  const competitorProducts = getCompetitorProductsFromSheet();
 
   const expenseItems = {};
   (sheetData.ExpenseItems || [[]]).slice(1).forEach(([campaign,item]) => {
@@ -166,7 +176,7 @@ function getInitialData(forceRefresh) {
     expenseItems[campaign].push(item);
   });
 
-  const initialData = {locations, products, competitorProducts, employees, expenseItems};
+  const initialData = {locations, products, competitorProducts: getCompetitorProductsFromSheet(), employees, expenseItems};
   try { cache.put(cacheKey, JSON.stringify(initialData), CACHE_EXPIRATION_SECONDS); } catch (e) { /* local/browser cache remains available */ }
   return initialData;
 }

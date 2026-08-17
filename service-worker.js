@@ -1,4 +1,4 @@
-const CACHE_NAME = 'festival-app-v12-competitor-sales';
+const CACHE_NAME = 'festival-app-v18-competitor-products-fixed';
 const APP_SHELL = [
   './index.html',
   './reports.html',
