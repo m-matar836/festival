@@ -1,4 +1,4 @@
-const CACHE_NAME = 'festival-app-v18-competitor-products-fixed';
+const CACHE_NAME = 'festival-app-v26-hyper-speed';
 const APP_SHELL = [
   './index.html',
   './reports.html',
@@ -34,14 +34,8 @@ self.addEventListener('fetch', event => {
   event.respondWith(
     caches.match(request).then(cached => {
       if (cached) {
-        // Update same-origin resources in the background.
-        if (new URL(request.url).origin === self.location.origin) {
-          fetch(request).then(response => {
-            if (response && response.ok) {
-              caches.open(CACHE_NAME).then(cache => cache.put(request, response.clone()));
-            }
-          }).catch(() => {});
-        }
+        // V25: cache-first means navigation and static assets render immediately.
+        // The app's explicit refresh button/service-worker update handles freshness.
         return cached;
       }
 

@@ -2,10 +2,13 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwM8lFkSiaGM5SmS6cFwbEtUXzFoc91m25lh9RT6OVMnGukJjHL_yg20sxm6_18VE75/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw_oVkeNSSUeTOOJ30kiWCvz1PMPfMD2fm5rKJmFGcyt8ga3j_b7lT7a6ftMkeFS3oY/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
+// V25: in-memory caches eliminate repeated localStorage JSON parsing during the same page session.
+let memoryDbCache = null;
+let memoryReportsCache = null;
 
 let originalCreatedAt = null; 
 
@@ -13,7 +16,7 @@ let originalCreatedAt = null;
 //                     OFFLINE-FIRST STORAGE
 // ===================================================================
 const OFFLINE_DB_NAME = 'festivalOfflineDB';
-const OFFLINE_DB_VERSION = 1;
+const OFFLINE_DB_VERSION = 2;
 const OFFLINE_QUEUE_STORE = 'pendingReports';
 
 function openOfflineDB() {
@@ -87,7 +90,11 @@ async function syncPendingReports() {
         }
     }
     if (syncedAny) {
-        try { await refreshAppCache({ silent: true }); } catch (e) { console.warn('Post-sync cache refresh skipped:', e); }
+        // Syncing reports does not require rebuilding master data. Invalidate only
+        // the local report list so the next history view gets fresh server data.
+        memoryReportsCache = null;
+        localStorage.removeItem('reportsCache');
+        window.dispatchEvent(new CustomEvent('reportsCacheInvalidated'));
     }
     updateOfflineStatus();
 }
@@ -118,7 +125,17 @@ async function updateOfflineStatus() {
 
 window.addEventListener('online', () => { updateOfflineStatus(); syncPendingReports(); });
 window.addEventListener('offline', updateOfflineStatus);
-setInterval(() => { if (navigator.onLine) syncPendingReports(); }, 30000);
+let pendingSyncTimer = null;
+async function runPendingSyncIfNeeded() {
+    if (!navigator.onLine) return;
+    try {
+        const pending = await getPendingReports();
+        if (pending.length) await syncPendingReports();
+    } catch (e) {
+        console.warn('Pending sync check skipped:', e);
+    }
+}
+pendingSyncTimer = setInterval(runPendingSyncIfNeeded, 300000);
 document.addEventListener('DOMContentLoaded', () => {
     setupCacheRefreshButtons();
     setTimeout(() => { updateOfflineStatus(); syncPendingReports(); }, 500);
@@ -160,6 +177,7 @@ document.addEventListener('DOMContentLoaded', () => {
 //                      2. جلب البيانات من Google Sheet
 // ===================================================================
 async function getDbData() {
+    if (memoryDbCache) return memoryDbCache;
     const DB_KEY = APP_DB_KEY;
     const TS_KEY = APP_DB_TS_KEY;
     const cachedDB = localStorage.getItem(DB_KEY);
@@ -169,7 +187,8 @@ async function getDbData() {
         const ageMinutes = cacheTimestamp ? (Date.now() - Number(cacheTimestamp)) / 60000 : Infinity;
         // استخدم الكاش مباشرة إذا كان Offline، حتى لو انتهت مدته.
         if (!navigator.onLine || (cacheTimestamp && ageMinutes < CACHE_DURATION_MINUTES)) {
-            return JSON.parse(cachedDB);
+            memoryDbCache = JSON.parse(cachedDB);
+            return memoryDbCache;
         }
     }
 
@@ -180,13 +199,15 @@ async function getDbData() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const dbData = await res.json();
         if (dbData.status === 'error') throw new Error(dbData.message || 'API error');
+        memoryDbCache = dbData;
         localStorage.setItem(DB_KEY, JSON.stringify(dbData));
         localStorage.setItem(TS_KEY, Date.now());
         return dbData;
     } catch (error) {
         if (cachedDB) {
             console.warn('Using cached DB because network request failed:', error);
-            return JSON.parse(cachedDB);
+            memoryDbCache = JSON.parse(cachedDB);
+            return memoryDbCache;
         }
         throw error;
     }
@@ -195,7 +216,7 @@ async function getDbData() {
 // ===================================================================
 //                 CACHE REFRESH / FAST DATA UPDATE
 // ===================================================================
-const APP_DB_VERSION = 'v18-competitor-products-fixed';
+const APP_DB_VERSION = 'v26-hyper-speed';
 const APP_DB_KEY = `appDB_${APP_DB_VERSION}`;
 const APP_DB_TS_KEY = `dbCacheTimestamp_${APP_DB_VERSION}`;
 
@@ -255,6 +276,7 @@ async function refreshAppCache({ silent = false, refreshReports = true } = {}) {
         }
 
         // Replace the cache only after a complete successful response.
+        memoryDbCache = freshDB;
         localStorage.setItem(APP_DB_KEY, JSON.stringify(freshDB));
         localStorage.setItem(APP_DB_TS_KEY, String(Date.now()));
 
@@ -267,7 +289,7 @@ async function refreshAppCache({ silent = false, refreshReports = true } = {}) {
                     const reportsResponse = await fetch(reportUrl, { cache: 'no-store' });
                     if (reportsResponse.ok) {
                         const freshReports = await reportsResponse.json();
-                        if (Array.isArray(freshReports)) localStorage.setItem('reportsCache', JSON.stringify(freshReports));
+                        if (Array.isArray(freshReports)) { memoryReportsCache = freshReports; localStorage.setItem('reportsCache', JSON.stringify(freshReports)); }
                     }
                 }
             } catch (reportsError) {
@@ -279,13 +301,9 @@ async function refreshAppCache({ silent = false, refreshReports = true } = {}) {
         window.dispatchEvent(new CustomEvent('dbCacheRefreshed', { detail: freshDB }));
 
         // Update the Service Worker itself without deleting the working cache first.
+        // V25: Service Worker update is non-blocking; it must never delay the user-facing refresh.
         if ('serviceWorker' in navigator) {
-            try {
-                const registrations = await navigator.serviceWorker.getRegistrations();
-                await Promise.all(registrations.map(reg => reg.update()));
-            } catch (swError) {
-                console.warn('Service Worker update skipped:', swError);
-            }
+            navigator.serviceWorker.getRegistrations().then(regs => Promise.all(regs.map(reg => reg.update()))).catch(() => {});
         }
 
         buttons.forEach(btn => {
@@ -1138,8 +1156,14 @@ async function handleReportPage() {
                 });
                 const result = await res.json();
                 if (result.status !== 'success') throw new Error(result.message || 'فشل الحفظ');
-                // Rebuild the local cache after every successful report so the next report sees fresh data.
-                try { await refreshAppCache({ silent: true }); } catch (cacheError) { console.warn('Post-report cache refresh skipped:', cacheError); }
+                // Do NOT rebuild the whole master-data cache after every report.
+                // Reports do not change Products/Locations/Employees, so a full refresh here
+                // only adds a large network round-trip and JSON parsing cost. The server
+                // invalidates the report cache on save; history will fetch the fresh report list
+                // when opened. Keep the current in-memory product cache intact.
+                memoryReportsCache = null;
+                localStorage.removeItem('reportsCache');
+                window.dispatchEvent(new CustomEvent('reportsCacheInvalidated'));
                 return result;
             } catch (error) {
                 // في حالة انقطاع الشبكة أثناء الإرسال، خزّن التقرير للمزامنة.
@@ -1831,8 +1855,16 @@ async function handleHistoryPage() {
         }
     };
 
-    const cachedReportsJSON = localStorage.getItem('reportsCache');
-    if (cachedReportsJSON) {
+    const cachedReportsJSON = memoryReportsCache ? null : localStorage.getItem('reportsCache');
+    if (memoryReportsCache) {
+        const allCachedReports = memoryReportsCache;
+        currentReports = currentUser.role === 'admin' ? allCachedReports : allCachedReports.filter(r => {
+            const ownerId = String(r.createdById || '').trim();
+            const ownerName = String(r.createdByName || '').trim();
+            return (ownerId && ownerId === String(currentUser.id || '').trim()) || (!ownerId && ownerName && ownerName === String(currentUser.name || '').trim());
+        });
+        renderReports(currentReports);
+    } else if (cachedReportsJSON) {
         try {
             const allCachedReports = JSON.parse(cachedReportsJSON);
             if (Array.isArray(allCachedReports)) {
@@ -1854,7 +1886,10 @@ async function handleHistoryPage() {
     searchInput.addEventListener('input', (e) => {
         const term = e.target.value.toLowerCase().trim();
         if (!term) { renderReports(currentReports); return; }
-        const filtered = currentReports.filter(r => `${r.campaign||''} ${r.market||''} ${r.date||''} ${r.supervisor||''}`.toLowerCase().includes(term));
+        const filtered = currentReports.filter(r => {
+            const haystack = r.__searchText || (r.__searchText = `${r.campaign||''} ${r.market||''} ${r.date||''} ${r.supervisor||''}`.toLowerCase());
+            return haystack.includes(term);
+        });
         renderReports(filtered);
     });
 
@@ -1871,6 +1906,7 @@ async function handleHistoryPage() {
         const allFreshReports = await res.json();
         if (!Array.isArray(allFreshReports)) throw new Error(allFreshReports?.message || 'استجابة غير صالحة من الخادم');
         const freshReportsJSON = JSON.stringify(allFreshReports);
+        memoryReportsCache = allFreshReports;
         localStorage.setItem('reportsCache', freshReportsJSON);
         // الخادم يعيد تقارير المستخدم عند الطلب، ونُبقي الفلترة هنا أيضاً كطبقة حماية للواجهة.
         currentReports = currentUser.role === 'admin' ? allFreshReports : allFreshReports.filter(r => {

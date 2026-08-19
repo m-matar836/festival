@@ -11,7 +11,8 @@ const promotersSheet = aSheet.getSheetByName("promoters");
 const usersSheet = aSheet.getSheetByName("Users");
 const cache = CacheService.getScriptCache();
 const CACHE_EXPIRATION_SECONDS = 3600;
-const INITIAL_DATA_CACHE_VERSION = 'v20-user-history-sales-visibility';
+const INITIAL_DATA_CACHE_VERSION = 'v25-ultra-speed';
+const PRODUCT_LOOKUP_CACHE_VERSION = 'v25-product-lookup';
 
 function doGet(e) {
   try {
@@ -80,6 +81,7 @@ function createJsonResponse(data) {
 }
 
 function doLogin(payload) {
+  if (!usersSheet || usersSheet.getLastRow() < 2) throw new Error("لا توجد بيانات مستخدمين");
   const usersData = usersSheet.getRange(2,1,usersSheet.getLastRow()-1,5).getValues();
   const inputUsernameLower = String(payload.username || '').toLowerCase();
   const foundUser = usersData.find(row => String(row[1]).toLowerCase() === inputUsernameLower && String(row[2]) === String(payload.password));
@@ -136,12 +138,14 @@ function getInitialData(forceRefresh) {
     cache.remove(cacheKey);
   }
 
-  const sheets = aSheet.getSheets();
+  // Read only the sheets required by the application instead of scanning every
+  // spreadsheet tab on each cache rebuild. This is noticeably faster on large files.
+  const requiredSheetNames = ["Locations","Products","ProductsOfCompetitor","Employees","ExpenseItems"];
   const sheetData = {};
-  sheets.forEach(sheet => {
-    const sheetName = sheet.getName();
-    if (["Locations","Products","ProductsOfCompetitor","Employees","ExpenseItems"].includes(sheetName)) {
-      if (sheet.getLastRow() > 0) sheetData[sheetName] = sheet.getDataRange().getValues();
+  requiredSheetNames.forEach(sheetName => {
+    const sheet = aSheet.getSheetByName(sheetName);
+    if (sheet && sheet.getLastRow() > 0) {
+      sheetData[sheetName] = sheet.getDataRange().getValues();
     }
   });
 
@@ -168,15 +172,13 @@ function getInitialData(forceRefresh) {
     });
   }
 
-  const competitorProducts = getCompetitorProductsFromSheet();
-
   const expenseItems = {};
   (sheetData.ExpenseItems || [[]]).slice(1).forEach(([campaign,item]) => {
     if (!expenseItems[campaign]) expenseItems[campaign] = [];
     expenseItems[campaign].push(item);
   });
 
-  const initialData = {locations, products, competitorProducts: getCompetitorProductsFromSheet(), employees, expenseItems};
+  const initialData = {locations, products, competitorProducts: buildCompetitorProductsFromRows(sheetData.ProductsOfCompetitor || []), employees, expenseItems};
   try { cache.put(cacheKey, JSON.stringify(initialData), CACHE_EXPIRATION_SECONDS); } catch (e) { /* local/browser cache remains available */ }
   return initialData;
 }
@@ -184,24 +186,24 @@ function getInitialData(forceRefresh) {
 function findProductByBarcode(barcode, campaign) {
   const code = String(barcode || '').trim();
   if (!code) return {status:"error", message:"Barcode is required"};
-  const sheet = aSheet.getSheetByName("Products");
-  if (!sheet || sheet.getLastRow() < 2) return {status:"error", message:"Products sheet is empty"};
-  const data = sheet.getDataRange().getValues();
-  const headers = data.shift();
-  const campaignCol = getColumnIndex(headers,['campaign','الحملة'],0);
-  const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],1);
-  const priceCol = getColumnIndex(headers,['price','السعر'],2);
-  const companyCol = getColumnIndex(headers,['الشركة','company'],3);
-  const barcodeCol = getColumnIndex(headers,['barcode','باركود','الباركود'],4);
-  const categoryCol = getColumnIndex(headers,['تصنيف المادة','category','التصنيف'],5);
-  const cancelledCol = getColumnIndex(headers,['إلغاء المادة','cancelled','canceled','الغاء المادة'],6);
-  const row = data.find(r => {
-    const rowCampaign = String(r[campaignCol] ?? '').trim();
-    const campaignMatches = !campaign || campaign === 'شاملة' || rowCampaign === String(campaign).trim();
-    return campaignMatches && String(r[barcodeCol] ?? '').trim() === code && String(r[productCol] ?? '').trim() && String(r[categoryCol] ?? '').trim() === 'مادة بيعية' && !isCancelledValue(r[cancelledCol]);
-  });
-  if (!row) return {status:"error", message:"Product not found"};
-  return {status:"success", product:{campaign:row[campaignCol], name:row[productCol], price:Number(row[priceCol])||0, company:row[companyCol]||'', barcode:String(row[barcodeCol]??'').trim(), category:row[categoryCol]||'', cancelled:row[cancelledCol]||''}};
+
+  // V25: never scan the entire Products sheet for every barcode. Reuse the
+  // already-built initial-data cache and search only the relevant campaign.
+  const initialData = getInitialData(false);
+  const productsByCampaign = initialData.products || {};
+  const wantedCampaign = String(campaign || '').trim();
+  const campaigns = (!wantedCampaign || wantedCampaign === 'شاملة')
+    ? Object.keys(productsByCampaign)
+    : [wantedCampaign];
+
+  for (const camp of campaigns) {
+    const list = productsByCampaign[camp] || [];
+    const match = list.find(p => String(p.barcode || '').trim() === code && String(p.category || '').trim() === 'مادة بيعية' && !p.cancelled);
+    if (match) {
+      return {status:"success", product:{campaign:camp, name:match.name, price:Number(match.price)||0, company:match.company||'', barcode:String(match.barcode||'').trim(), category:match.category||'', cancelled:false}};
+    }
+  }
+  return {status:"error", message:"Product not found"};
 }
 
 function clearReportDetails(reportId) {
@@ -242,54 +244,72 @@ function addReportDetails(reportData) {
   }
 }
 
-// Updates the master price in Products for the products whose price was edited in the report.
+function buildCompetitorProductsFromRows(rows) {
+  const result = [];
+  if (!Array.isArray(rows) || rows.length < 2) return result;
+  const headers = rows[0];
+  const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],0);
+  const barcodeCol = getColumnIndex(headers,['barcode','باركود','الباركود'],1);
+  const cancelledCol = getColumnIndex(headers,['إلغاء المادة','cancelled','canceled','الغاء المادة'],2);
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const product = String(row[productCol] ?? '').trim();
+    if (!product || isCancelledValue(row[cancelledCol])) continue;
+    result.push({product, name: product, barcode: String(row[barcodeCol] ?? '').trim(), cancelled:false});
+  }
+  return result;
+}
+
+// Updates master prices without rewriting the whole Products sheet.
 function updateProductPrices(reportData) {
   const sheet = aSheet.getSheetByName('Products');
   if (!sheet || sheet.getLastRow() < 2 || !reportData || !Array.isArray(reportData.sales)) return;
+  if (String(reportData.event || '').trim() !== 'ترويج وبيع مباشر') return;
 
-  const range = sheet.getDataRange();
-  const values = range.getValues();
-  const headers = values[0];
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1,1,1,lastCol).getValues()[0];
   const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],1);
   const priceCol = getColumnIndex(headers,['price','السعر'],2);
   const campaignCol = getColumnIndex(headers,['campaign','الحملة'],0);
 
-  const eventType = String(reportData.event || '').trim();
-  if (eventType !== 'ترويج وبيع مباشر') return;
+  const products = sheet.getRange(2, productCol + 1, lastRow - 1, 1).getValues();
+  const campaigns = sheet.getRange(2, campaignCol + 1, lastRow - 1, 1).getValues();
+  const prices = sheet.getRange(2, priceCol + 1, lastRow - 1, 1).getValues();
 
   const reportCampaign = String(reportData.campaign ?? '').trim();
   const requested = new Map();
   reportData.sales.forEach(s => {
     const name = String(s.product ?? '').trim();
-    if (!name) return;
     const price = Number(s.price);
-    if (!Number.isFinite(price)) return;
+    if (!name || !Number.isFinite(price)) return;
     const campaign = String(s.campaign ?? reportCampaign).trim();
     requested.set(`${campaign}|||${name}`, price);
   });
-
   if (!requested.size) return;
-  let changed = false;
-  for (let r = 1; r < values.length; r++) {
-    const name = String(values[r][productCol] ?? '').trim();
-    const rowCampaign = String(values[r][campaignCol] ?? '').trim();
-    if (!name) continue;
 
-    let key = `${rowCampaign}|||${name}`;
-    let newPrice = requested.get(key);
+  let changed = false;
+  for (let i = 0; i < products.length; i++) {
+    const name = String(products[i][0] ?? '').trim();
+    const rowCampaign = String(campaigns[i][0] ?? '').trim();
+    if (!name) continue;
+    let newPrice = requested.get(`${rowCampaign}|||${name}`);
     if (newPrice === undefined && reportCampaign === 'شاملة') {
-      // With a "شاملة" report, update only an unambiguous product name.
       const matches = [...requested.entries()].filter(([k]) => k.endsWith(`|||${name}`));
       if (matches.length === 1) newPrice = matches[0][1];
     }
-    if (newPrice === undefined) continue;
-
-    if (Number(values[r][priceCol]) !== newPrice) {
-      values[r][priceCol] = newPrice;
+    if (newPrice !== undefined && Number(prices[i][0]) !== newPrice) {
+      prices[i][0] = newPrice;
       changed = true;
     }
   }
-  if (changed) range.setValues(values);
+  if (changed) {
+    // One write for the price column instead of rewriting every Products cell.
+    sheet.getRange(2, priceCol + 1, prices.length, 1).setValues(prices);
+    SpreadsheetApp.flush();
+    cache.remove('initialData_' + INITIAL_DATA_CACHE_VERSION);
+    cache.remove('allReports_v3_user_history');
+  }
 }
 
 function ensureReportsColumn(columnName) {
@@ -313,49 +333,37 @@ function updateProductPrice(payload) {
 
   const sheet = aSheet.getSheetByName('Products');
   if (!sheet || sheet.getLastRow() < 2) throw new Error('Products sheet is empty');
-  const range = sheet.getDataRange();
-  const values = range.getValues();
-  const headers = values[0];
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1,1,1,lastCol).getValues()[0];
   const productCol = getColumnIndex(headers,['product','المادة','اسم المادة'],1);
   const priceCol = getColumnIndex(headers,['price','السعر'],2);
   const campaignCol = getColumnIndex(headers,['campaign','الحملة'],0);
-
   const barcodeCol = getColumnIndex(headers,['barcode','باركود','الباركود'],4);
 
+  const names = sheet.getRange(2, productCol + 1, lastRow - 1, 1).getValues();
+  const campaigns = sheet.getRange(2, campaignCol + 1, lastRow - 1, 1).getValues();
+  const barcodes = sheet.getRange(2, barcodeCol + 1, lastRow - 1, 1).getValues();
+  const prices = sheet.getRange(2, priceCol + 1, lastRow - 1, 1).getValues();
+
   let matches = 0;
-  for (let r=1; r<values.length; r++) {
-    const rowName = String(values[r][productCol] ?? '').trim();
-    const rowCampaign = String(values[r][campaignCol] ?? '').trim();
-    const rowBarcode = String(values[r][barcodeCol] ?? '').trim();
-
-    const campaignMatches = campaign === 'شاملة'
-      ? (rowName === productName)
-      : (rowCampaign === campaign && rowName === productName);
-
+  for (let i = 0; i < names.length; i++) {
+    const rowName = String(names[i][0] ?? '').trim();
+    const rowCampaign = String(campaigns[i][0] ?? '').trim();
+    const rowBarcode = String(barcodes[i][0] ?? '').trim();
+    const campaignMatches = campaign === 'شاملة' ? rowName === productName : (rowCampaign === campaign && rowName === productName);
     if (!campaignMatches) continue;
-
-    // عند توفر الباركود، استخدمه لتحديد نفس المادة بشكل أدق.
-    // نحدّث كل السجلات المطابقة حتى لا يبقى سعر قديم لنفس الباركود
-    // ويعود للواجهة عند المسح التالي.
     if (barcode && rowBarcode && rowBarcode !== barcode) continue;
-
-    values[r][priceCol] = price;
+    prices[i][0] = price;
     matches++;
   }
   if (!matches) throw new Error('المادة غير موجودة ضمن الحملة المحددة');
-  range.setValues(values);
-  SpreadsheetApp.flush();
 
-  // السعر المعدل هو السعر المعتمد مباشرة: امسح كل كاشات البيانات المرتبطة
-  // حتى لا تعود الواجهة إلى السعر القديم عند إعادة فتح/مسح الباركود.
-  cache.removeAll([
-    'initialData_' + INITIAL_DATA_CACHE_VERSION,
-    'allReports',
-    'allReports_v2',
-    'allReports_v3_user_history'
-  ]);
-  // إعادة بناء كاش البيانات مباشرة بعد تعديل السعر، بحيث تكون Products هي المصدر
-  // الفعلي للسعر الجديد حتى قبل أي طلب لاحق من المتصفح.
+  // Only the price column is written. This is dramatically faster than setValues on the entire sheet.
+  sheet.getRange(2, priceCol + 1, prices.length, 1).setValues(prices);
+  SpreadsheetApp.flush();
+  cache.remove('initialData_' + INITIAL_DATA_CACHE_VERSION);
+  cache.remove('allReports_v3_user_history');
   getInitialData(true);
 
   return {status:'success', updated:matches, price:price, cacheRefreshed:true};
