@@ -2,7 +2,7 @@
 //   script.js - النسخة النهائية مع إصلاح مشكلة تفريغ الحقول
 // ===================================================================
 
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw_oVkeNSSUeTOOJ30kiWCvz1PMPfMD2fm5rKJmFGcyt8ga3j_b7lT7a6ftMkeFS3oY/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzoZBhcuWt26QGvYhNVxw1WdWBGevmdFJ9bdrxPehhzBkE9_97_yTQNUDswQ8nj5VZy/exec";
 const CACHE_DURATION_MINUTES = 1440;
 const FORM_STATE_KEY = 'reportFormLastState'; 
 const EDIT_STATE_KEY = 'reportToEdit';
@@ -142,6 +142,31 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ===================================================================
+//     V27: تحميل مكتبات خارجية ثقيلة عند الحاجة فقط (Lazy Loading)
+// ===================================================================
+const HTML5_QRCODE_SRC = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+let html5QrcodeLoadPromise = null;
+function loadHtml5QrcodeLibrary() {
+    if (typeof Html5Qrcode !== 'undefined') return Promise.resolve(true);
+    if (html5QrcodeLoadPromise) return html5QrcodeLoadPromise;
+    html5QrcodeLoadPromise = new Promise((resolve) => {
+        const existing = document.querySelector(`script[src="${HTML5_QRCODE_SRC}"]`);
+        if (existing) {
+            existing.addEventListener('load', () => resolve(true));
+            existing.addEventListener('error', () => resolve(false));
+            return;
+        }
+        const script = document.createElement('script');
+        script.src = HTML5_QRCODE_SRC;
+        script.async = true;
+        script.onload = () => resolve(true);
+        script.onerror = () => resolve(false);
+        document.body.appendChild(script);
+    });
+    return html5QrcodeLoadPromise;
+}
+
+// ===================================================================
 //                      1. التهيئة العامة والتحقق من تسجيل الدخول
 // ===================================================================
 document.addEventListener('DOMContentLoaded', () => {
@@ -166,11 +191,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (window.location.pathname.includes('reports.html')) document.querySelector('.nav-link-reports').classList.add('active');
         if (window.location.pathname.includes('history.html')) document.querySelector('.nav-link-history').classList.add('active');
+        if (window.location.pathname.includes('materialsMovement.html')) document.querySelector('.nav-link-movement')?.classList.add('active');
     }
 
     if (isLoginPage) handleLoginPage();
     else if (document.getElementById('reportForm')) handleReportPage();
     else if (document.getElementById('reports-accordion')) handleHistoryPage();
+    else if (document.getElementById('reportSelect') && document.getElementById('movementWorkArea')) handleMaterialsMovementPage();
 });
 
 // ===================================================================
@@ -1600,11 +1627,22 @@ async function handleReportPage() {
         const status = document.getElementById('cameraScannerStatus');
 
         if (typeof Html5Qrcode === 'undefined') {
-            const msg = 'مكتبة قراءة الباركود بالكاميرا لم تُحمّل. افتح الموقع مرة واحدة مع الإنترنت ثم حاول مجدداً.';
-            status.textContent = msg;
-            showToast(msg, true);
+            if (!navigator.onLine) {
+                const msg = 'مكتبة قراءة الباركود بالكاميرا تحتاج اتصالاً بالإنترنت لتحميلها أول مرة.';
+                status.textContent = msg;
+                showToast(msg, true);
+                barcodeCameraModal.show();
+                return;
+            }
+            status.textContent = 'جاري تحميل مكتبة الكاميرا...';
             barcodeCameraModal.show();
-            return;
+            const loaded = await loadHtml5QrcodeLibrary();
+            if (!loaded || typeof Html5Qrcode === 'undefined') {
+                const msg = 'تعذر تحميل مكتبة قراءة الباركود بالكاميرا. تحقق من الاتصال وحاول مجدداً.';
+                status.textContent = msg;
+                showToast(msg, true);
+                return;
+            }
         }
         if (!campaignSelect.value) {
             showToast('يرجى اختيار نوع الحملة أولاً.', true);
@@ -1830,7 +1868,11 @@ async function handleHistoryPage() {
             const expensesRows = report.expenses?.length > 0 ? report.expenses.map(exp => `<tr><td>${exp.item || '-'}</td><td>${exp.quantity || '0'}</td></tr>`).join('') : '<tr><td colspan="2" class="text-center text-muted">لا توجد مصاريف</td></tr>';
             const competitorSalesRows = report.salesOfCompetitor?.length > 0 ? report.salesOfCompetitor.map(s => `<tr><td>${s.product||'-'}</td><td>${Number(s.price||0).toFixed(2)}</td><td>${s.quantity||0}</td></tr>`).join('') : '<tr><td colspan="3" class="text-center text-muted">لا توجد مبيعات منافس</td></tr>';
             const promotersList = report.promoters && report.promoters.length > 0 ? report.promoters.join(', ') : 'لا يوجد';
-            const reportHTML = `<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#c-${report.id}"><strong>${report.campaign} - ${report.market}</strong> (${report.date})</button></h2><div id="c-${report.id}" class="accordion-collapse collapse" data-bs-parent="#reports-accordion"><div class="accordion-body"><p><strong>تاريخ الإنشاء:</strong> ${report.createdAt || 'غير مسجل'}</p><p><strong>الحدث:</strong> ${report.event} (${report.eventDays} أيام) | <strong>الوقت:</strong> ${report.timeFrom} - ${report.timeTo}</p><p><strong>الفريق:</strong> منسق (${report.coordinator || 'N/A'})، جرد (${report.inventoryDependency || 'N/A'})، مشرف (${report.supervisor || 'N/A'})</p><p><strong>المروجون:</strong> ${promotersList}</p><h5 class="mt-4">المبيعات</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>السعر</th><th>الكمية</th><th>المجموع</th></tr></thead><tbody>${salesRows}</tbody>${report.sales?.length > 0 ? `<tfoot class="table-light fw-bold"><tr><td class="text-end" colspan="2">الإجمالي:</td><td>${totalQuantity}</td><td>${grandTotal.toFixed(2)}</td></tr></tfoot>` : ''}</table><h5 class="mt-4">مبيعات المنافس</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>السعر</th><th>الكمية</th></tr></thead><tbody>${competitorSalesRows}</tbody></table><h5 class="mt-4">المصاريف</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>الكمية</th></tr></thead><tbody>${expensesRows}</tbody></table>${report.notes ? `<hr><p><strong>ملاحظات:</strong> ${report.notes}</p>` : ''}<div class="text-end mt-3 border-top pt-3"><a href="reports.html?edit=${report.id}" class="btn btn-sm btn-primary edit-report-btn" data-report-id="${report.id}"><i class="fa-solid fa-pen-to-square me-1"></i> تعديل</a></div></div></div></div>`;
+            const isDirectSaleReport = String(report.event || '').trim() === 'ترويج وبيع مباشر';
+            const movementBtn = isDirectSaleReport
+                ? `<a href="materialsMovement.html?reportId=${encodeURIComponent(report.id)}" class="btn btn-sm btn-outline-primary me-2"><i class="fa-solid fa-right-left me-1"></i> سحب / مرتجع مواد</a>`
+                : '';
+            const reportHTML = `<div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#c-${report.id}"><strong>${report.campaign} - ${report.market}</strong> (${report.date})</button></h2><div id="c-${report.id}" class="accordion-collapse collapse" data-bs-parent="#reports-accordion"><div class="accordion-body"><p><strong>تاريخ الإنشاء:</strong> ${report.createdAt || 'غير مسجل'}</p><p><strong>الحدث:</strong> ${report.event} (${report.eventDays} أيام) | <strong>الوقت:</strong> ${report.timeFrom} - ${report.timeTo}</p><p><strong>الفريق:</strong> منسق (${report.coordinator || 'N/A'})، جرد (${report.inventoryDependency || 'N/A'})، مشرف (${report.supervisor || 'N/A'})</p><p><strong>المروجون:</strong> ${promotersList}</p><h5 class="mt-4">المبيعات</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>السعر</th><th>الكمية</th><th>المجموع</th></tr></thead><tbody>${salesRows}</tbody>${report.sales?.length > 0 ? `<tfoot class="table-light fw-bold"><tr><td class="text-end" colspan="2">الإجمالي:</td><td>${totalQuantity}</td><td>${grandTotal.toFixed(2)}</td></tr></tfoot>` : ''}</table><h5 class="mt-4">مبيعات المنافس</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>السعر</th><th>الكمية</th></tr></thead><tbody>${competitorSalesRows}</tbody></table><h5 class="mt-4">المصاريف</h5><table class="table table-sm table-bordered"><thead><tr><th>المادة</th><th>الكمية</th></tr></thead><tbody>${expensesRows}</tbody></table>${report.notes ? `<hr><p><strong>ملاحظات:</strong> ${report.notes}</p>` : ''}<div class="text-end mt-3 border-top pt-3">${movementBtn}<a href="reports.html?edit=${report.id}" class="btn btn-sm btn-primary edit-report-btn" data-report-id="${report.id}"><i class="fa-solid fa-pen-to-square me-1"></i> تعديل</a></div></div></div></div>`;
             reportsAccordion.insertAdjacentHTML('beforeend', reportHTML);
         });
         reportsAccordion.querySelectorAll('.edit-report-btn').forEach(button => {
@@ -1883,14 +1925,20 @@ async function handleHistoryPage() {
         reportsAccordion.innerHTML = `<div class="text-center p-5"><i class="fa-solid fa-spinner fa-spin fa-2x"></i><p class="mt-2">جار تحميل السجل لأول مرة...</p></div>`;
     }
 
+    // V27: debounce لتقليل عمليات إعادة الرسم أثناء الكتابة السريعة في قائمة طويلة من التقارير.
+    let searchDebounceTimer = null;
     searchInput.addEventListener('input', (e) => {
-        const term = e.target.value.toLowerCase().trim();
-        if (!term) { renderReports(currentReports); return; }
-        const filtered = currentReports.filter(r => {
-            const haystack = r.__searchText || (r.__searchText = `${r.campaign||''} ${r.market||''} ${r.date||''} ${r.supervisor||''}`.toLowerCase());
-            return haystack.includes(term);
-        });
-        renderReports(filtered);
+        clearTimeout(searchDebounceTimer);
+        const value = e.target.value;
+        searchDebounceTimer = setTimeout(() => {
+            const term = value.toLowerCase().trim();
+            if (!term) { renderReports(currentReports); return; }
+            const filtered = currentReports.filter(r => {
+                const haystack = r.__searchText || (r.__searchText = `${r.campaign||''} ${r.market||''} ${r.date||''} ${r.supervisor||''}`.toLowerCase());
+                return haystack.includes(term);
+            });
+            renderReports(filtered);
+        }, 150);
     });
 
     try {
@@ -1919,5 +1967,343 @@ async function handleHistoryPage() {
         if (!cachedReportsJSON) {
             reportsAccordion.innerHTML = `<div class="alert alert-danger">فشل تحميل سجل التقارير. يرجى التحقق من الاتصال وبيانات المستخدم ثم تحديث الصفحة.</div>`;
         }
+    }
+}
+
+// ===================================================================
+//         6. منطق صفحة سحب / مرتجع مواد المهرجان (materialsMovement.html)
+// ===================================================================
+const DIRECT_SALE_EVENT_NAME = 'ترويج وبيع مباشر';
+
+async function handleMaterialsMovementPage() {
+    const currentUser = JSON.parse(localStorage.getItem('currentUser')) || JSON.parse(sessionStorage.getItem('currentUser'));
+    if (!currentUser) { window.location.href = 'index.html'; return; }
+
+    const toastContainer = document.getElementById('toast-notification');
+    const toastMessage = toastContainer.querySelector('.toast-message');
+    const showToast = (message, isError = false) => {
+        toastMessage.textContent = message;
+        toastMessage.classList.toggle('error', isError);
+        toastContainer.classList.add('show');
+        setTimeout(() => toastContainer.classList.remove('show'), 3000);
+    };
+
+    const reportSelect = document.getElementById('reportSelect');
+    const loadReportBtn = document.getElementById('loadReportBtn');
+    const reportInfoBox = document.getElementById('reportInfoBox');
+    const reportGuardBox = document.getElementById('reportGuardBox');
+    const movementWorkArea = document.getElementById('movementWorkArea');
+    const movementTableBody = document.getElementById('movement-table-body');
+    const addMovementRowBtn = document.getElementById('addMovementRowBtn');
+    const saveMovementBtn = document.getElementById('saveMovementBtn');
+    const movementHistoryBody = document.getElementById('movement-history-body');
+    const inventorySummaryBody = document.getElementById('inventory-summary-body');
+    const sendRemainingBtn = document.getElementById('sendRemainingBtn');
+
+    const productModal = new bootstrap.Modal(document.getElementById('movementProductSelectionModal'));
+    const productSearchInput = document.getElementById('movementProductSearchInput');
+    const productSelectionTbody = document.querySelector('#movementProductSelectionTable tbody');
+    const addSelectedProductsBtn = document.getElementById('addSelectedMovementProductsBtn');
+
+    let DB = null;
+    let allDirectSaleReports = [];
+    let currentReport = null;
+
+    const isCancelledProduct = (product) => {
+        if (!product) return true;
+        const value = String(product.cancelled ?? '').trim().toLowerCase();
+        return product.cancelled === true || value === 'true' || value === '1' || value === 'yes' || value === 'نعم';
+    };
+
+    const getProductsForCampaign = (campaignName) => {
+        if (!DB || !DB.products) return [];
+        let products = [];
+        if (campaignName === 'شاملة' || campaignName === 'مهرجان') {
+            const map = new Map();
+            Object.values(DB.products).flat().forEach(p => { if (p && p.name) map.set(p.name, p); });
+            products = Array.from(map.values());
+        } else {
+            products = DB.products[campaignName] || [];
+        }
+        return products.filter(p => p && p.name && String(p.category ?? '').trim() === 'مادة بيعية' && !isCancelledProduct(p));
+    };
+
+    // -----------------------------------------------------------------
+    // تحميل قائمة تقارير "ترويج وبيع مباشر" الخاصة بالمستخدم لملء القائمة المنسدلة
+    // -----------------------------------------------------------------
+    async function loadDirectSaleReportsList() {
+        try {
+            const params = new URLSearchParams({
+                action: 'getReports',
+                userId: String(currentUser.id || ''),
+                role: String(currentUser.role || ''),
+                userName: String(currentUser.name || ''),
+                _: String(Date.now())
+            });
+            const res = await fetch(`${SCRIPT_URL}?${params.toString()}`, { cache: 'no-store' });
+            const allReports = await res.json();
+            if (!Array.isArray(allReports)) throw new Error(allReports?.message || 'تعذر تحميل التقارير');
+            allDirectSaleReports = allReports.filter(r => String(r.event || '').trim() === DIRECT_SALE_EVENT_NAME);
+        } catch (e) {
+            allDirectSaleReports = [];
+        }
+
+        reportSelect.innerHTML = '<option value="" selected disabled>اختر تقريراً من نوع "ترويج وبيع مباشر"...</option>';
+        allDirectSaleReports.slice().reverse().forEach(r => {
+            const opt = document.createElement('option');
+            opt.value = r.id;
+            opt.textContent = `${r.campaign || ''} - ${r.market || ''} (${r.date || ''})`;
+            reportSelect.appendChild(opt);
+        });
+        loadReportBtn.disabled = allDirectSaleReports.length === 0;
+    }
+
+    // -----------------------------------------------------------------
+    // فتح تقرير محدد: التحقق من نوع الحدث ثم عرض قسم العمل
+    // -----------------------------------------------------------------
+    async function openReport(reportId) {
+        reportInfoBox.classList.add('d-none');
+        reportGuardBox.classList.add('d-none');
+        movementWorkArea.classList.add('d-none');
+        currentReport = null;
+        if (!reportId) return;
+
+        try {
+            const res = await fetch(`${SCRIPT_URL}?action=getReportById&id=${encodeURIComponent(reportId)}&_=${Date.now()}`, { cache: 'no-store' });
+            const result = await res.json();
+            if (!result || result.status !== 'success' || !result.report) {
+                throw new Error(result?.message || 'لم يتم العثور على التقرير');
+            }
+            currentReport = result.report;
+        } catch (e) {
+            showToast(e.message || 'تعذر تحميل بيانات التقرير', true);
+            return;
+        }
+
+        const eventType = String(currentReport.event || '').trim();
+        if (eventType !== DIRECT_SALE_EVENT_NAME) {
+            reportGuardBox.textContent = `هذه الصفحة متاحة فقط للتقارير من نوع الحدث "${DIRECT_SALE_EVENT_NAME}". نوع حدث هذا التقرير هو: "${eventType || 'غير محدد'}".`;
+            reportGuardBox.classList.remove('d-none');
+            return;
+        }
+
+        reportInfoBox.innerHTML = `<i class="fa-solid fa-circle-check me-1"></i> تم فتح المهرجان: <strong>${currentReport.campaign || ''} - ${currentReport.market || ''}</strong> بتاريخ ${currentReport.date || ''} (رقم التقرير: ${currentReport.id})`;
+        reportInfoBox.classList.remove('d-none');
+        movementWorkArea.classList.remove('d-none');
+        movementTableBody.innerHTML = '';
+
+        // تحديث الرابط ليحمل reportId دون إعادة تحميل الصفحة
+        const url = new URL(window.location.href);
+        url.searchParams.set('reportId', currentReport.id);
+        window.history.replaceState({}, '', url.toString());
+
+        await refreshMovementsAndSummary();
+    }
+
+    // -----------------------------------------------------------------
+    // إضافة صف حركة جديد (مادة + كمية + عملية)
+    // -----------------------------------------------------------------
+    function createMovementRow(productName) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>
+                <input type="text" class="form-control movement-product" value="${productName}" readonly>
+            </td>
+            <td>
+                <input type="number" class="form-control movement-quantity" min="1" step="1" value="1">
+            </td>
+            <td>
+                <select class="form-select movement-operation">
+                    <option value="سحب">سحب</option>
+                    <option value="مرتجع">مرتجع</option>
+                </select>
+            </td>
+            <td class="text-center">
+                <button type="button" class="btn btn-sm btn-outline-danger remove-movement-row"><i class="fa-solid fa-trash"></i></button>
+            </td>`;
+        tr.querySelector('.remove-movement-row').addEventListener('click', () => tr.remove());
+        movementTableBody.appendChild(tr);
+    }
+
+    function populateProductModal() {
+        if (!currentReport) return;
+        const products = getProductsForCampaign(currentReport.campaign);
+        productSelectionTbody.innerHTML = '';
+        products.forEach(p => {
+            productSelectionTbody.insertAdjacentHTML('beforeend', `<tr><td><div class="form-check"><input class="form-check-input movement-product-check" type="checkbox" value="${p.name}" style="pointer-events:none;"></div></td><td>${p.name}</td></tr>`);
+        });
+        productSearchInput.value = '';
+        productSearchInput.dispatchEvent(new Event('input'));
+    }
+
+    productSelectionTbody.addEventListener('click', (e) => {
+        const row = e.target.closest('tr');
+        if (!row) return;
+        const checkbox = row.querySelector('.form-check-input');
+        if (checkbox) checkbox.checked = !checkbox.checked;
+    });
+
+    productSearchInput.addEventListener('input', () => {
+        const s = productSearchInput.value.toLowerCase().trim();
+        productSelectionTbody.querySelectorAll('tr').forEach(r => {
+            r.style.display = r.cells[1].textContent.toLowerCase().includes(s) ? '' : 'none';
+        });
+    });
+
+    addMovementRowBtn.addEventListener('click', () => {
+        if (!currentReport) return;
+        populateProductModal();
+        productModal.show();
+    });
+
+    addSelectedProductsBtn.addEventListener('click', () => {
+        productSelectionTbody.querySelectorAll('.movement-product-check:checked').forEach(c => createMovementRow(c.value));
+        productModal.hide();
+    });
+
+    // -----------------------------------------------------------------
+    // حفظ الحركة (سحب/مرتجع) إلى festivalMovement
+    // -----------------------------------------------------------------
+    saveMovementBtn.addEventListener('click', async () => {
+        if (!currentReport) return;
+        const rows = Array.from(movementTableBody.querySelectorAll('tr'));
+        if (!rows.length) { showToast('يرجى إضافة مادة واحدة على الأقل.', true); return; }
+
+        const items = [];
+        for (const row of rows) {
+            const item = row.querySelector('.movement-product').value.trim();
+            const quantity = Number(row.querySelector('.movement-quantity').value);
+            const operation = row.querySelector('.movement-operation').value;
+            if (!item) { showToast('اسم المادة مطلوب.', true); return; }
+            if (!Number.isFinite(quantity) || quantity <= 0) { showToast(`الكمية غير صحيحة للمادة: ${item}`, true); return; }
+            items.push({ item, quantity, operation });
+        }
+
+        saveMovementBtn.disabled = true;
+        saveMovementBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i> جاري الحفظ...';
+        try {
+            const res = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({
+                    action: 'addFestivalMovement',
+                    payload: {
+                        reportId: currentReport.id,
+                        items,
+                        createdById: String(currentUser.id || ''),
+                        createdByName: String(currentUser.name || '')
+                    }
+                })
+            });
+            const result = await res.json();
+            if (!result || result.status !== 'success') throw new Error(result?.message || 'فشل حفظ الحركة');
+            showToast('تم حفظ الحركة بنجاح.');
+            movementTableBody.innerHTML = '';
+            await refreshMovementsAndSummary();
+        } catch (e) {
+            showToast(e.message || 'حدث خطأ أثناء حفظ الحركة', true);
+        } finally {
+            saveMovementBtn.disabled = false;
+            saveMovementBtn.innerHTML = '<i class="fa-solid fa-floppy-disk me-1"></i> حفظ الحركة';
+        }
+    });
+
+    // -----------------------------------------------------------------
+    // جلب سجل الحركات وبناء محصلة الجرد (سحب - مرتجع لكل مادة)
+    // -----------------------------------------------------------------
+    let lastSummary = [];
+
+    async function refreshMovementsAndSummary() {
+        if (!currentReport) return;
+        movementHistoryBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted"><i class="fa-solid fa-spinner fa-spin me-1"></i> جاري التحميل...</td></tr>`;
+        inventorySummaryBody.innerHTML = `<tr><td colspan="4" class="text-center text-muted"><i class="fa-solid fa-spinner fa-spin me-1"></i> جاري التحميل...</td></tr>`;
+        try {
+            const res = await fetch(`${SCRIPT_URL}?action=getFestivalMovements&reportId=${encodeURIComponent(currentReport.id)}&_=${Date.now()}`, { cache: 'no-store' });
+            const result = await res.json();
+            if (!result || result.status !== 'success') throw new Error(result?.message || 'تعذر تحميل الحركات');
+            const movements = Array.isArray(result.movements) ? result.movements : [];
+
+            if (!movements.length) {
+                movementHistoryBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted">لا توجد حركات مسجلة بعد</td></tr>`;
+                inventorySummaryBody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">لا توجد بيانات بعد</td></tr>`;
+                lastSummary = [];
+                return;
+            }
+
+            movementHistoryBody.innerHTML = movements.slice().reverse().map(m =>
+                `<tr><td>${m.item}</td><td>${m.quantity}</td><td>${m.operation === 'سحب' ? '<span class="badge bg-danger">سحب</span>' : '<span class="badge bg-success">مرتجع</span>'}</td><td>${m.date}</td><td>${m.createdByName || '-'}</td></tr>`
+            ).join('');
+
+            const summaryMap = new Map();
+            movements.forEach(m => {
+                if (!summaryMap.has(m.item)) summaryMap.set(m.item, { item: m.item, withdrawn: 0, returned: 0 });
+                const entry = summaryMap.get(m.item);
+                if (m.operation === 'سحب') entry.withdrawn += Number(m.quantity) || 0;
+                else if (m.operation === 'مرتجع') entry.returned += Number(m.quantity) || 0;
+            });
+
+            lastSummary = Array.from(summaryMap.values()).map(e => ({ ...e, remaining: e.withdrawn - e.returned }));
+            inventorySummaryBody.innerHTML = lastSummary.map(e =>
+                `<tr><td>${e.item}</td><td>${e.withdrawn}</td><td>${e.returned}</td><td class="fw-bold ${e.remaining < 0 ? 'text-danger' : ''}">${e.remaining}</td></tr>`
+            ).join('');
+        } catch (e) {
+            movementHistoryBody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">تعذر تحميل السجل: ${e.message || ''}</td></tr>`;
+            inventorySummaryBody.innerHTML = `<tr><td colspan="4" class="text-center text-danger">تعذر تحميل المحصلة</td></tr>`;
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // إرسال الكميات الباقية (الصافي الموجب فقط) إلى جدول المبيعات في التقرير
+    // -----------------------------------------------------------------
+    sendRemainingBtn.addEventListener('click', async () => {
+        if (!currentReport) return;
+        const itemsToSend = lastSummary.filter(e => e.remaining > 0).map(e => ({ item: e.item, quantity: e.remaining }));
+        if (!itemsToSend.length) { showToast('لا توجد كميات متبقية (صافي موجب) لإرسالها.', true); return; }
+
+        if (!confirm(`سيتم إرسال الكميات المتبقية لـ ${itemsToSend.length} مادة إلى جدول المبيعات لهذا التقرير. متابعة؟`)) return;
+
+        sendRemainingBtn.disabled = true;
+        sendRemainingBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i> جاري الإرسال...';
+        try {
+            const res = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({
+                    action: 'sendRemainingToSales',
+                    payload: { reportId: currentReport.id, items: itemsToSend }
+                })
+            });
+            const result = await res.json();
+            if (!result || result.status !== 'success') throw new Error(result?.message || 'فشل إرسال الكميات إلى المبيعات');
+            memoryReportsCache = null;
+            localStorage.removeItem('reportsCache');
+            showToast(`تم إرسال الكميات إلى المبيعات (تحديث: ${result.updated || 0}، إضافة: ${result.added || 0}).`);
+        } catch (e) {
+            showToast(e.message || 'حدث خطأ أثناء الإرسال إلى المبيعات', true);
+        } finally {
+            sendRemainingBtn.disabled = false;
+            sendRemainingBtn.innerHTML = '<i class="fa-solid fa-paper-plane me-1"></i> إرسال الكميات الباقية للمبيعات';
+        }
+    });
+
+    reportSelect.addEventListener('change', () => { loadReportBtn.disabled = !reportSelect.value; });
+    loadReportBtn.addEventListener('click', () => openReport(reportSelect.value));
+
+    // -----------------------------------------------------------------
+    // التهيئة الأولية
+    // -----------------------------------------------------------------
+    try {
+        DB = await getDbData();
+    } catch (e) {
+        DB = { products: {} };
+    }
+
+    await loadDirectSaleReportsList();
+
+    const urlReportId = new URLSearchParams(window.location.search).get('reportId');
+    if (urlReportId) {
+        reportSelect.value = urlReportId;
+        loadReportBtn.disabled = false;
+        await openReport(urlReportId);
     }
 }

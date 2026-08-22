@@ -273,6 +273,13 @@ body {
     background-color: rgba(74, 144, 226, 0.05);
 }
 
+/* V27: تسريع رسم سجل التقارير عند وجود عدد كبير من العناصر عبر تخطي
+   حساب/رسم العناصر المطوية (collapsed) خارج نطاق الشاشة حتى يتم فتحها. */
+#reports-accordion .accordion-item {
+    content-visibility: auto;
+    contain-intrinsic-size: 90px 1000px;
+}
+
 .accordion-button:focus {
     box-shadow: 0 0 0 0.25rem rgba(74, 144, 226, 0.2);
 }

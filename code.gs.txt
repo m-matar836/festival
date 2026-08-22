@@ -24,6 +24,7 @@ function doGet(e) {
       case "getReportById": response = getReportById(e.parameter.id); break;
       case "findProductByBarcode": response = findProductByBarcode(e.parameter.barcode, e.parameter.campaign); break;
       case "getCompetitorProducts": response = getCompetitorProductsFromSheet(); break;
+      case "getFestivalMovements": response = getFestivalMovements(e.parameter.reportId); break;
       default: response = {status:"error", message:"Invalid GET Action"};
     }
     return createJsonResponse(response);
@@ -57,6 +58,14 @@ function doPost(e) {
 
       case "refreshCache":
         response = refreshCache();
+        break;
+
+      case "addFestivalMovement":
+        response = addFestivalMovement(request.payload);
+        break;
+
+      case "sendRemainingToSales":
+        response = sendRemainingToSales(request.payload);
         break;
 
       default:
@@ -747,4 +756,154 @@ if (!newMarket) {
       market: newMarket
     }
   };
+}
+
+// ===============================================================
+// سحب / مرتجع مواد المهرجان (festivalMovement)
+// متاحة فقط للتقارير التي نوع الحدث فيها "ترويج وبيع مباشر".
+// ===============================================================
+
+const FESTIVAL_MOVEMENT_SHEET_NAME = "festivalMovement";
+const FESTIVAL_MOVEMENT_HEADERS = ["reportId","item","quantity","operation","date","createdById","createdByName"];
+const DIRECT_SALE_EVENT = "ترويج وبيع مباشر";
+
+function ensureFestivalMovementSheet() {
+  let sheet = aSheet.getSheetByName(FESTIVAL_MOVEMENT_SHEET_NAME);
+  if (!sheet) {
+    sheet = aSheet.insertSheet(FESTIVAL_MOVEMENT_SHEET_NAME);
+    sheet.getRange(1,1,1,FESTIVAL_MOVEMENT_HEADERS.length).setValues([FESTIVAL_MOVEMENT_HEADERS]);
+  } else if (sheet.getLastRow() < 1) {
+    sheet.getRange(1,1,1,FESTIVAL_MOVEMENT_HEADERS.length).setValues([FESTIVAL_MOVEMENT_HEADERS]);
+  }
+  return sheet;
+}
+
+// يبحث عن نوع الحدث والحملة الخاصة بتقرير (مهرجان) محدد عبر id، بدون فلترة حسب المستخدم.
+function getReportEventAndCampaign(reportId) {
+  const id = String(reportId || '').trim();
+  if (!id) return null;
+  const report = getReports().find(r => String(r.id) === id);
+  if (!report) return null;
+  return { event: String(report.event || '').trim(), campaign: String(report.campaign || '').trim(), market: String(report.market || '').trim(), date: report.date || '' };
+}
+
+function getFestivalMovements(reportId) {
+  const id = String(reportId || '').trim();
+  if (!id) throw new Error('معرّف التقرير (المهرجان) مطلوب');
+  const sheet = ensureFestivalMovementSheet();
+  if (sheet.getLastRow() < 2) return { status:'success', movements: [] };
+
+  const timezone = aSheet.getSpreadsheetTimeZone() || Session.getScriptTimeZone() || 'GMT';
+  const data = sheet.getRange(2,1,sheet.getLastRow()-1,FESTIVAL_MOVEMENT_HEADERS.length).getValues();
+  const movements = data
+    .filter(row => String(row[0]).trim() === id)
+    .map(row => {
+      const dateValue = row[4];
+      const dateText = (dateValue instanceof Date && !isNaN(dateValue.getTime()))
+        ? Utilities.formatDate(dateValue, timezone, 'yyyy-MM-dd HH:mm')
+        : String(dateValue || '');
+      return {
+        reportId: String(row[0]),
+        item: String(row[1]),
+        quantity: Number(row[2]) || 0,
+        operation: String(row[3]),
+        date: dateText,
+        createdById: String(row[5] || ''),
+        createdByName: String(row[6] || '')
+      };
+    });
+  return { status:'success', movements: movements };
+}
+
+function addFestivalMovement(payload) {
+  payload = payload || {};
+  const reportId = String(payload.reportId || '').trim();
+  if (!reportId) throw new Error('معرّف المهرجان (التقرير) مطلوب');
+
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  if (!items.length) throw new Error('يرجى إضافة مادة واحدة على الأقل');
+
+  const reportInfo = getReportEventAndCampaign(reportId);
+  if (!reportInfo) throw new Error('لم يتم العثور على التقرير (المهرجان) المحدد');
+  if (reportInfo.event !== DIRECT_SALE_EVENT) {
+    throw new Error('سحب/مرتجع المواد متاح فقط للتقارير من نوع "' + DIRECT_SALE_EVENT + '"');
+  }
+
+  const createdById = String(payload.createdById || '').trim();
+  const createdByName = String(payload.createdByName || '').trim();
+  const now = new Date();
+
+  const rows = items.map(it => {
+    const item = String((it && it.item) || '').trim();
+    const quantity = Number(it && it.quantity);
+    const operation = String((it && it.operation) || '').trim();
+    if (!item) throw new Error('اسم المادة مطلوب');
+    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('الكمية يجب أن تكون رقماً أكبر من صفر (المادة: ' + item + ')');
+    if (operation !== 'سحب' && operation !== 'مرتجع') throw new Error('العملية يجب أن تكون "سحب" أو "مرتجع" (المادة: ' + item + ')');
+    return [reportId, item, quantity, operation, now, createdById, createdByName];
+  });
+
+  const sheet = ensureFestivalMovementSheet();
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, FESTIVAL_MOVEMENT_HEADERS.length).setValues(rows);
+
+  return { status:'success', added: rows.length };
+}
+
+// يجمع صافي (سحب - مرتجع) لكل مادة ضمن تقرير معيّن، ويرسل الكميات المتبقية
+// إلى ورقة sales لنفس التقرير، بحيث تظهر مباشرة ضمن جدول المبيعات في صفحة التقرير.
+function sendRemainingToSales(payload) {
+  payload = payload || {};
+  const reportId = String(payload.reportId || '').trim();
+  if (!reportId) throw new Error('معرّف التقرير (المهرجان) مطلوب');
+
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  if (!items.length) throw new Error('لا توجد كميات متبقية لإرسالها إلى المبيعات');
+
+  const reportInfo = getReportEventAndCampaign(reportId);
+  if (!reportInfo) throw new Error('لم يتم العثور على التقرير (المهرجان) المحدد');
+  if (reportInfo.event !== DIRECT_SALE_EVENT) {
+    throw new Error('هذا الإجراء متاح فقط للتقارير من نوع "' + DIRECT_SALE_EVENT + '"');
+  }
+
+  // بناء جدول أسعار من بيانات المنتجات المخزّنة، حسب حملة التقرير.
+  const initialData = getInitialData(false);
+  const productsByCampaign = initialData.products || {};
+  const campaign = reportInfo.campaign;
+  const relevantLists = (campaign === 'شاملة' || campaign === 'مهرجان')
+    ? Object.values(productsByCampaign).flat()
+    : (productsByCampaign[campaign] || []);
+  const priceLookup = new Map();
+  relevantLists.forEach(p => { if (p && p.name && !priceLookup.has(p.name)) priceLookup.set(p.name, Number(p.price) || 0); });
+
+  if (!salesSheet) throw new Error('ورقة sales غير موجودة');
+  const lastRow = salesSheet.getLastRow();
+  const existing = lastRow > 1 ? salesSheet.getRange(2,1,lastRow-1,4).getValues() : [];
+
+  let updated = 0, added = 0;
+  const rowsToAppend = [];
+  items.forEach(it => {
+    const item = String((it && it.item) || '').trim();
+    const quantity = Number(it && it.quantity) || 0;
+    if (!item || quantity <= 0) return;
+    const price = priceLookup.has(item) ? priceLookup.get(item) : (Number(it && it.price) || 0);
+    const existingIndex = existing.findIndex(row => String(row[0]).trim() === reportId && String(row[1]).trim() === item);
+    if (existingIndex !== -1) {
+      const sheetRow = existingIndex + 2; // +1 for header, +1 because getRange started at row 2
+      salesSheet.getRange(sheetRow, 3, 1, 2).setValues([[price, quantity]]);
+      updated++;
+    } else {
+      rowsToAppend.push([reportId, item, price, quantity]);
+      added++;
+    }
+  });
+
+  if (rowsToAppend.length) {
+    salesSheet.getRange(salesSheet.getLastRow() + 1, 1, rowsToAppend.length, 4).setValues(rowsToAppend);
+  }
+
+  if (updated || added) {
+    cache.removeAll(['allReports','allReports_v2','allReports_v3_user_history']);
+  }
+
+  return { status:'success', updated: updated, added: added };
 }

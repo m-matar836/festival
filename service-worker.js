@@ -1,8 +1,9 @@
-const CACHE_NAME = 'festival-app-v26-hyper-speed';
+const CACHE_NAME = 'festival-app-v27-hyper-speed';
 const APP_SHELL = [
   './index.html',
   './reports.html',
   './history.html',
+  './materialsMovement.html',
   './style.css',
   './script.js',
   './manifest.json'
